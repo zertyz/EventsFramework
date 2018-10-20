@@ -29,6 +29,11 @@ Sometimes there are cases in which it is difficult, by the definitions given abo
 
   - Imagine the server's mechanism for incrementing the usage metrics of their services: the event is generated with the needed information, but the main server code don't care if it will be listened by "Log Writters", "Metrics Gathering" or some sort of "DDoS Pattern Detection" algorithm. This should be considered a Listenable Event, since an instance of such server might work without these features.
 
+The case for "Synchronous Consumable Event" vs method invocation.
+
+- https://nikitablack.github.io/2016/04/12/Generic-C-delegates.html
+- https://www.codeproject.com/Articles/1170503/The-Impossibly-Fast-Cplusplus-Delegates-Fixed
+
 Real-time requisites
 ====================
 
