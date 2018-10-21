@@ -1,5 +1,6 @@
-# EventFramework
+# EventsFramework
 A framework for efficient (local or distributed) event driven programming, easing the creation of decoupled architectures and respecting real-time constraints.
+
 
 Introduction
 ============
@@ -29,7 +30,33 @@ Sometimes there are cases in which it is difficult, by the definitions given abo
 
   - Imagine the server's mechanism for incrementing the usage metrics of their services: the event is generated with the needed information, but the main server code don't care if it will be listened by "Log Writters", "Metrics Gathering" or some sort of "DDoS Pattern Detection" algorithm. This should be considered a Listenable Event, since an instance of such server might work without these features.
 
-The case for "Synchronous Consumable Event" vs method invocation.
+
+The case for "Synchronous Consumable Event" vs method invocation
+================================================================
+
+When one looks at the simplifyed execution flow of a Synchronous Consumable Event, one might see:
+
+	registerEventConsumer(MY_EVENT_TYPE, MY_METHOD)  // consumer
+	(...)
+	myEvent  = produceEvent(MY_EVENT_TYPE, params)   // producer
+	reportConsumableEvent(myEvent)
+	(...)
+	answer = waitForAnswer(myEvent)                  // will wait for execution of MY_METHOD(params)
+
+Which is remakably similar to a standard function call:
+
+    answer = MY_METHOD(params)
+
+So, before we dismiss the Synchronous Consumable Events, lets look at some features of this framework:
+
+    1) Distributed execution -- METHOD might be executed on another machine;
+    2) Interchanging the control flow without affecting the program logic -- METHOD might be executed on another machine or thread, for efficiency reasons, or on the same thread, for easily testing and debugging the logic;
+    3) Resource Optimization and Overloading Protection -- considering simultaneous MY_METHOD executions, there is likely to be a number which will produce the maximum executions per minute a machine can handle. Numbers above it will put the machine into an overloading state and numbers below it will not use all it's capacity. Regardless of the number of events produced, only n threads must be executing MY_METHODs;
+    4) Processing Latency lowering -- parallel execution of 'MY_METHOD' may start as soon as you have 'params'. When you're ready to get the 'answer', it will likely take less time;
+    5) Fault tolerancy and operational flexibility -- Events might get their execution delayed or even recorded on a fallback queue, but are never ignored.
+
+We consider any of the reasons above to be enough to justify the use case.
+
 
 - https://nikitablack.github.io/2016/04/12/Generic-C-delegates.html
 - https://www.codeproject.com/Articles/1170503/The-Impossibly-Fast-Cplusplus-Delegates-Fixed
