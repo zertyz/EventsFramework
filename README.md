@@ -15,7 +15,15 @@ Event driven architectures aims to increase development productivity by allowing
 
 This framework provides mechanisms for efficient producing and consuming (and also notifying and observing) events. Events can be "consumed" or "observed". For instance, when a server receives a request it needs to provide a response -- this is an example of an event that was produced and consumed. On the other hand, when you plug a USB Stick on your computer, there might be a software to show the files: if there is, it will show; if there is not, nothing will happen. This is an example of an event who got notifyed but for which there may or may not be observers listening -- the computer will keep working fine if no one is listening for such events.
 
-Consumable Events may also be synchronous or asynchronous. Asynchronous events are the ones which you will not handle the answer. Synchronous, therefore, are the ones which you want the answer in order to proceed on your algorithm.
+Consumable Events may also be synchronous or asynchronous; and require a functional or procedural consumer. Asynchronous events are the ones which you don't care when they are consumed and synchronous, the opposite. Functional consumers will produce an answer and procedural consumers will not. The folowing table shows the possible combinations:
+
+	case #  synchronicity	     consumer sub-routine    valid?
+	  1         sync                   procedure          yes      
+	  2         async                  procedure          yes
+	  3         sync                   function           yes
+	  4         async                  function           no
+
+These classifications are important for they have performance implications. Case 2 is the most performant. Case 1 and 3 requires an additional queue to handle the answerd value or the "finished" signal. Case 4 is invalid: it must be reassigned as case 2 or 3.
 
   - An example of a "Synchronous Consumable Event" is the server response given above: the same socket that started the request must wait for the answer -- and the server thread must produce a consumable event, dispatch it to be processed elsewhere and wait until there is an answer to be written back to the socket.
   - An "Asynchronous Consumable Event" example might be a notification event, lets say, for the system operators in case some error was detected: the server produces the event and resumes it's business. The "Event Consumer for the Server's Notification Events" might, on another thread, choose to send an email, sms, mobile push notification or just log it. The event producer (the Server Internal Loop) don't need any answer from such events -- and these events should never be ignored as well: even if there are no consumers at the moment a Consumable Event is generated, this framework will keep track of it until one gets registered.
@@ -78,6 +86,37 @@ Some examples further explaining the above cases:
   It is a good moment to remember that the traditional blocking method call with parameters & return values is not good for low latency solutions. Modern programs, nowadays, need to fullfil requisites not needed by their users (for instance, logging requests, computing & checking quotas, recording usage statistics, ...). Typically, when method calls that return values are used, you must wait for them to perform all their tasks in order to have access to their meaningful answer. The above line, "reportAnswer(serviceAnswer)", immediately makes the response available to the "caller". The benefits scale when that approach cascades.
 
   The following benchmark demonstrates the latency improvements: ...
+
+
+API
+===
+
+    registerEventConsumer(MY_EVENT_TYPE, MY_METHOD)
+    reportConsumableEvent(myEvent)
+    eventId = reportConsumableEvent(QUERY3_EVENT, params3)
+    eventId = produceEvent(MY_EVENT_TYPE, params)
+    answer = waitForAnswer(myEvent)
+
+    answer = waitForAnswer(myEvent)
+    eventId = reportConsumableAnswerableEvent(MY_EVENT_TYPE, params)
+
+    registerSynchronizableFunctionConsumer()
+    registerSynchronizableProcedureConsumer()
+    registerNonSynchronizableProcedureConsumer() -- this way, every event must hold the information
+
+'EventLink's are responsible for linking producers & consumers and notifyers & observers. The following properties are controled:
+
+  - Consumer Sub-Routine: can be functional ou procedural
+  - Synchronicity: the events may be synchronizable or non-synchronizable
+  - Medium: several extensions are possible. Some examples: direct (same thread), queue (different threads), network (remote)
+
+    addListener(EventClient<EVENTS> listener)
+    remoteListener(...)
+    setConsumer(EventClient<EVENTS> listener)
+    unsetConsumer()
+    reportEvent(imi<EVENTS> events[])
+
+EventLink<EventHandlerParamType, EventReturnParamType>
 
 
 - https://nikitablack.github.io/2016/04/12/Generic-C-delegates.html
