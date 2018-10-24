@@ -116,7 +116,43 @@ API
     unsetConsumer()
     reportEvent(imi<EVENTS> events[])
 
-EventLink<EventHandlerParamType, EventReturnParamType>
+  - EventLink<EventHandlerParamType, EventReturnParamType>
+  - EVENTS are a collection (struct type) of sub-routine signatures, including the return type
+  - EventClients are an instance of EVENTS structure filled with the sub-routine pointers
+
+Spikes
+======
+
+struct SERVER_REQUEST_EVENTS {
+	struct RequestStaticContentEvent {
+		void (* eventHandler  )  (const socket& socket, const char* URI, const bool allowCache);
+	} requestStaticContent;
+
+	struct RequestDynamicContentEvent {
+		void (* eventHandler ) (const socket& socket, const char* URI, const bool allowCache, const char* headers);
+	} requestDynamicContent
+}
+
+struct STATIC_FILE_EVENTS {
+	struct ReadStaticFileEvent {
+		void (* eventHandler )  (const char* relativeFilePath)
+		void (* answerHandler ) (const char* staticFileContents);
+	} readStaticFile;
+}
+
+struct CACHE_EVENTS {
+	const char* (* getFromCache) (const char* URI);
+	void        (* putIntoCache) (const char* URL, const char* contents);
+}
+
+struct DYNAMIC_EVENTS {
+	const char* (* processRequest) (const socket& socket, const char* URI, const char* headers);
+}
+
+SERVER_REQUEST_EVENTS sre = {serveStaticContent = &serveStaticContentFunc, serveDynamicContent = &serveDynamicContentFunc};
+DirectEventLink<SERVER_REQUEST_EVENTS> serverDEL(sre);
+serverDEL.setConsumer<SERVER_REQUEST_EVENTS::RequestStaticContentEvent>(&requestStaticContentHandler, false, false);
+serverDEL.reportEvent<SERVER_REQUEST_EVENTS::RequestStaticContentEvent>()
 
 
 - https://nikitablack.github.io/2016/04/12/Generic-C-delegates.html
