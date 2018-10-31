@@ -91,13 +91,13 @@ struct EventLink {
 	string eventListenerName;
 
 	// consumer
-	void(*answerlessConsumerProcedureReference)(const _ArgumentType*);
-	void(*answerfullConsumerProcedureReference)(const _ArgumentType*, _AnswerType*, std::mutex*);
+	void(*answerlessConsumerProcedureReference)(const _ArgumentType&);
+	void(*answerfullConsumerProcedureReference)(const _ArgumentType&, _AnswerType*, std::mutex&);
 	_AnswerType* answerReferences[_NAnswers];
 	std::mutex   answerMutexes[_NAnswers];
 
 	// listeners
-	void(*listenerProcedureReferences[_NListeners])(const _ArgumentType*);
+	void(*listenerProcedureReferences[_NListeners])(const _ArgumentType&);
 	size_t nListenerProcedureReferences;
 
 	EventLink(string eventListenerName)
@@ -112,15 +112,15 @@ struct EventLink {
 		memset(answerMutexes,       '\0', sizeof(answerMutexes));
 	}
 
-	void setAnswerlessConsumer(void(&&consumerProcedureReference)(const _ArgumentType*)) {
+	void setAnswerlessConsumer(void(&&consumerProcedureReference)(const _ArgumentType&)) {
 		this->answerlessConsumerProcedureReference = consumerProcedureReference;
 	}
 
-	void setAnswerfullConsumer(void(&&consumerProcedureReference)(const _ArgumentType*, _AnswerType*, std::mutex*)) {
+	void setAnswerfullConsumer(void(&&consumerProcedureReference)(const _ArgumentType&, _AnswerType*, std::mutex&)) {
 		this->answerfullConsumerProcedureReference = consumerProcedureReference;
 	}
 
-	void addListener(void(&&listenerProcedureReference)(const _ArgumentType*)) {
+	void addListener(void(&&listenerProcedureReference)(const _ArgumentType&)) {
 		if (nListenerProcedureReferences >= _NListeners) {
 			THROW_EXCEPTION(overflow_error, "Out of listener slots (max="+to_string(_NListeners)+") while attempting to add a new event listener to '" + eventListenerName + "' " +
 			                                "(you may wish to increase '_NListeners' at '" + eventListenerName + "'s declaration)");
@@ -128,7 +128,7 @@ struct EventLink {
 		listenerProcedureReference[nListenerProcedureReferences++] = listenerProcedureReference;
 	}
 
-	int findListener(void(&&listenerProcedureReference)(const _ArgumentType*)) {
+	int findListener(void(&&listenerProcedureReference)(const _ArgumentType&)) {
 		for (size_t i=0; i<nListenerProcedureReferences; i++) {
 			if (listenerProcedureReferences[i] == listenerProcedureReference) {
 				return i;
@@ -137,7 +137,7 @@ struct EventLink {
 		return -1;
 	}
 
-	bool removeListener(void(&&listenerProcedureReference)(const _ArgumentType*)) {
+	bool removeListener(void(&&listenerProcedureReference)(const _ArgumentType&)) {
 		int pos = findListener(listenerProcedureReference);
 		if (pos == -1) {
 			return false;
@@ -156,7 +156,7 @@ struct EventLink {
 		}
 		return -1;
 	}
-	int reportEvent(const _ArgumentType* eventParameter, _AnswerType* answerObjectReference) {
+	int reportEvent(const _ArgumentType& eventParameter, _AnswerType* answerObjectReference) {
 		int eventId = findAvailableAnswerSlot();
 		if (eventId == -1) {
 			THROW_EXCEPTION(overflow_error, "Out of answer slots (max="+to_string(_NAnswers)+") while attempting to report a new '" + eventListenerName + "' event " +
@@ -164,10 +164,10 @@ struct EventLink {
 		}
 		answerReferences[eventId] = answerObjectReference;
 		answerMutexes[eventId].try_lock();
-		answerfullConsumerProcedureReference(eventParameter, answerObjectReference, &(answerMutexes[eventId]));
+		answerfullConsumerProcedureReference(eventParameter, answerObjectReference, answerMutexes[eventId]);
 		return eventId;
 	}
-	inline void reportEvent(const _ArgumentType* eventParameter) {
+	inline void reportEvent(const _ArgumentType& eventParameter) {
 		answerlessConsumerProcedureReference(eventParameter);
 	}
 
@@ -181,7 +181,7 @@ struct EventLink {
 		answerMutexes[eventId].unlock();
 	}
 
-	_AnswerType* reportEventAndWaitForAnswer(const _ArgumentType* eventParameter) {
+	_AnswerType* reportEventAndWaitForAnswer(const _ArgumentType& eventParameter) {
 		static thread_local _AnswerType answer;
 		int eventId = reportEvent(eventParameter, &answer);
 		return waitForAnswer(eventId);
@@ -191,9 +191,9 @@ struct EventLink {
 
 
 void _myIShits(int  p)    { cerr << "my  int    shits with p is " << p << endl;}
-void _myShits(const int* p)    { cerr << "my  int*   shits with p is " << p << endl;}
-void _myShits(const double* p, int* answer, std::mutex* answerMutex) { cerr << "my double* shits with p is " << *p << endl; *answer=(*p+0.5); answerMutex->unlock();}
-void _myShits(const float* p)  { cerr << "my float*  shits with p is " << p << endl;}
+void _myShits(const int& p)    { cerr << "my  int*   shits with p is " << p << endl;}
+void _myShits(const double& p, int* answer, std::mutex& answerMutex) { cerr << "my double* shits with p is " << p << endl; *answer=(p+0.5); answerMutex.unlock();}
+void _myShits(const float& p)  { cerr << "my float*  shits with p is " << p << endl;}
 BOOST_AUTO_TEST_CASE(apiUsageTest) {
 	EventFramework<int, MyEvents> myab({
 		[(int)MyEvents::EventA]=EventDefinition<int>(_myIShits),
@@ -208,7 +208,7 @@ BOOST_AUTO_TEST_CASE(apiUsageTest) {
 	FLOAT_SHITS.setAnswerlessConsumer(_myShits);
 
 	double d=3.14159;
-	cerr << "My Output is " << *(DOUBLE_SHITS.reportEventAndWaitForAnswer(&d)) << endl;
+	cerr << "My Output is " << *(DOUBLE_SHITS.reportEventAndWaitForAnswer(d)) << endl;
 }
 
 //BOOST_AUTO_TEST_CASE(apiUsageTest) {
