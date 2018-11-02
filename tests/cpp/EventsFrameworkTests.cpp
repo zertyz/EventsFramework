@@ -4,6 +4,7 @@
 #include <cstring>
 #include <mutex>
 #include <future>
+#include <queue>
 using namespace std;
 
 #include <boost/test/unit_test.hpp>
@@ -46,6 +47,16 @@ public:
 template <typename _AnswerType, typename _ArgumentType, int _NListeners, int _NAnswers>
 struct EventLink {
 
+
+	// default consumers
+	static void defaultAnswerlessConsumer (const _ArgumentType& p) {
+		// might enqueue requests on a {argument} list
+	}
+	static void defaultAnswerfullConsumer (const _ArgumentType& p, _AnswerType* a, std::mutex& m) {
+		// might enqueue requests on a {argument, answer, mutex} list
+	}
+
+
 	// debug info
 	string eventName;
 
@@ -59,10 +70,11 @@ struct EventLink {
 	void (*listenerProcedureReferences[_NListeners]) (const _ArgumentType&);
 	int nListenerProcedureReferences;
 
+
 	EventLink(string eventListenerName)
 			: eventName(eventListenerName)
-			, answerlessConsumerProcedureReference(nullptr)
-			, answerfullConsumerProcedureReference(nullptr) {
+			, answerlessConsumerProcedureReference(defaultAnswerlessConsumer)
+			, answerfullConsumerProcedureReference(defaultAnswerfullConsumer) {
 		// initialize listeners
 		memset(listenerProcedureReferences, '\0', sizeof(listenerProcedureReferences));
 		nListenerProcedureReferences = 0;
@@ -125,16 +137,16 @@ struct EventLink {
 		answerMutexes[eventId].try_lock();
 		return eventId;
 	}
-	int reportEvent(const _ArgumentType& eventParameter, _AnswerType* answerObjectReference) {
+	inline virtual int reportEvent(const _ArgumentType& eventParameter, _AnswerType* answerObjectReference) {
 		int eventId = reserveAnswerSlot(answerObjectReference);
 		answerfullConsumerProcedureReference(eventParameter, answerObjectReference, answerMutexes[eventId]);
 		return eventId;
 	}
-	inline void reportEvent(const _ArgumentType& eventParameter) {
+	inline virtual void reportEvent(const _ArgumentType& eventParameter) {
 		answerlessConsumerProcedureReference(eventParameter);
 	}
 
-	_AnswerType* waitForAnswer(size_t eventId) {
+	inline virtual _AnswerType* waitForAnswer(int eventId) {
 		_AnswerType* answer = answerReferences[eventId];
 		answerMutexes[eventId].lock();
 		answerMutexes[eventId].unlock();
@@ -142,15 +154,11 @@ struct EventLink {
 	}
 
 	// not used -- we now pass the mutex to the answerfull consumer
-	void reportAnswerIsReady(size_t eventId) {
+	void reportAnswerIsReady(int eventId) {
 		answerMutexes[eventId].unlock();
 	}
 
-	_AnswerType* reportEventAndWaitForAnswer(const _ArgumentType& eventParameter) {
-		static thread_local _AnswerType answer;
-		int eventId = reportEvent(eventParameter, &answer);
-		return waitForAnswer(eventId);
-	}
+	inline virtual _AnswerType* reportEventAndWaitForAnswer(const _ArgumentType& eventParameter) = 0;
 
 };
 
@@ -170,7 +178,7 @@ struct DirectEventLink : EventLink<_AnswerType, _ArgumentType, _NListeners, _NAn
 		}
 	}
 
-	int reportEvent(const _ArgumentType& eventParameter, _AnswerType* answerObjectReference) {
+	inline int reportEvent(const _ArgumentType& eventParameter, _AnswerType* answerObjectReference) override {
 		// sanity check
 		if (!this->answerfullConsumerProcedureReference) {
 			THROW_EXCEPTION(runtime_error, "Attempting to report an answerfull consumable event '" + this->eventName + "' using a 'DirectEventLink' "
@@ -190,22 +198,30 @@ struct DirectEventLink : EventLink<_AnswerType, _ArgumentType, _NListeners, _NAn
 		notifyEventListeners(eventParameter);
 		return 1;
 	}
-	inline void reportEvent(const _ArgumentType& eventParameter) {
-		// allow answerless event consumption
-		if (this->answerlessConsumerProcedureReference) this->answerlessConsumerProcedureReference(eventParameter);
+
+	inline void reportEvent(const _ArgumentType& eventParameter) override {
+		// answerless event consumption
+		this->answerlessConsumerProcedureReference(eventParameter);
 		// event notification
 		notifyEventListeners(eventParameter);
 	}
 
 	// no wait is needed on this implementation since the answer was already computed at the moment the event got reported with 'reportEvent(eventParameter, answerObjectReference)'
-	_AnswerType* waitForAnswer(size_t eventId) {
+	inline _AnswerType* waitForAnswer(int eventId) override {
 		return answerObjectReference;
 	}
 
-	inline _AnswerType* reportEventAndWaitForAnswer(const _ArgumentType& eventParameter) {
-		static thread_local _AnswerType answer;
-		reportEvent(eventParameter, &answer);
-		return &answer;
+	inline _AnswerType* reportEventAndWaitForAnswer(const _ArgumentType& eventParameter) override {
+		if constexpr (std::is_same<_AnswerType, void>::value) {
+			// method body when _AnswerType is void
+			this->answerfullConsumerProcedureReference(eventParameter, nullptr, answerMutex);
+			return nullptr;
+		} else {
+			// method body when _AnswerType isn't void
+			static thread_local _AnswerType answer;
+			reportEvent(eventParameter, &answer);
+			return &answer;
+		}
 	}
 
 };
@@ -262,11 +278,11 @@ BOOST_AUTO_TEST_CASE(apiUsageTest) {
 		[(int)MyEvents::EventB]=EventDefinition<int>(_myIShits),
 		[(int)MyEvents::EventC]=EventDefinition<int>(_myIShits)});
 
-	EventLink<void, int   , 10, 4>    INT_SHITS("Integral shits");
+	DirectEventLink<void, int   , 10, 4>    INT_SHITS("Integral shits");
 	INT_SHITS.setAnswerlessConsumer(_myShits);
-	EventLink<int, double, 10, 4> DOUBLE_SHITS("Double shits");
+	DirectEventLink<int, double, 10, 4> DOUBLE_SHITS("Double shits");
 	DOUBLE_SHITS.setAnswerfullConsumer(_myShits);
-	EventLink<void, float , 10, 4>  FLOAT_SHITS("Floating shits");
+	DirectEventLink<void, float , 10, 4>  FLOAT_SHITS("Floating shits");
 	FLOAT_SHITS.setAnswerlessConsumer(_myShits);
 
 	double d=3.14159;
@@ -281,10 +297,141 @@ BOOST_AUTO_TEST_CASE(apiUsageTest) {
 		DirectEvent.removeListener(_myListener);
 	}
 	cerr << "My Output is " << *(DirectEvent.reportEventAndWaitForAnswer(10.1)) << endl;
+
+	int answer;
+	int eventId = DirectEvent.reportEvent(12.49, &answer);
+	cerr << "My delayed output is ";
+	DirectEvent.waitForAnswer(eventId);
+	cerr << answer << endl;
 }
 
 //BOOST_AUTO_TEST_CASE(apiUsageTest) {
 //}
+
+BOOST_AUTO_TEST_SUITE_END();
+
+
+struct QueueSuiteObjects {
+
+    // test case constants
+    static constexpr unsigned int numberOfCalls  = 4'096'000*512;
+    static constexpr unsigned int numberOfPasses = 4;
+    static constexpr unsigned int threads        = 4;
+
+    // test case data
+    static   std::vector  <std::string>* stdStringKeys;		// keys for all by EASTL containers
+
+    // output messages for boost tests
+    static string testOutput;
+
+
+    QueueSuiteObjects() {
+    	static bool firstRun = true;
+    	if (firstRun) {
+			cerr << endl << endl;
+			cerr << "Queue Spikes:" << endl;
+			cerr << "============ " << endl << endl;
+			firstRun = false;
+    	}
+    }
+    ~QueueSuiteObjects() {
+    	BOOST_TEST_MESSAGE("\n" + testOutput);
+    	testOutput = "";
+    }
+
+    static void output(string msg, bool toCerr) {
+    	if (toCerr) cerr << msg << flush;
+    	testOutput.append(msg);
+    }
+    static void output(string msg) {
+    	output(msg, true);
+    }
+
+};
+// static initializers
+string QueueSuiteObjects::testOutput = "";
+
+
+template <typename _QueueElement, typename _QueueSlotsType = uint_fast8_t>
+struct NonBlockingNonReentrantQueue {
+
+	_QueueElement backingArray[(size_t)std::numeric_limits<_QueueSlotsType>::max()+(size_t)1];	// an array sized like this allows implicit modulus operations on indexes of the same type (_QueueSlotsType)
+	_QueueSlotsType queueHead;
+	_QueueSlotsType queueTail;
+
+	NonBlockingNonReentrantQueue() {
+		queueHead = 0;
+		queueTail = 0;
+	}
+
+	// TODO another constructor might receive pointers to all local variables -- allowing for mmapped backed queues
+
+	inline bool enqueue(_QueueElement& elementToEnqueue) {
+		// check if queue is full -- the following increment has an implicit modulus operation on 'std::numeric_limits<_QueueSlotsType>::max'
+		_QueueSlotsType pos = queueTail++;
+		if (pos == queueHead) {
+			queueTail--;
+			return false;
+		}
+		memcpy(&backingArray[pos], &elementToEnqueue, sizeof(_QueueElement));
+		return true;
+	}
+
+	inline bool dequeue(_QueueElement* dequeuedElement) {
+		// check if queue is empty -- the following increment has an implicit modulus operation on 'std::numeric_limits<_QueueSlotsType>::max'
+		_QueueSlotsType pos = queueHead++;
+		if (pos == queueTail) {
+			queueHead--;
+			return false;
+		}
+		memcpy(dequeuedElement, &backingArray[pos], sizeof(_QueueElement));
+		return true;
+	}
+
+
+
+};
+
+BOOST_FIXTURE_TEST_SUITE(QueueSuite, QueueSuiteObjects);
+
+BOOST_AUTO_TEST_CASE(NonBlockingNonReentrantQueueSpikes) {
+	HEAP_MARK();
+	int r=19258499;
+	int dequeuedR;
+	NonBlockingNonReentrantQueue<int> myQueue;
+	for (int p=0; p<numberOfPasses; p++) {
+		unsigned long long start = TimeMeasurements::getMonotonicRealTimeUS();
+		for (unsigned int i=0; i<numberOfCalls; i++) {
+			myQueue.enqueue(r);
+			myQueue.dequeue(&dequeuedR);
+			r ^= dequeuedR;
+		}
+		unsigned long long finish = TimeMeasurements::getMonotonicRealTimeUS();
+		output("directCallSpikes Pass " + to_string(p) + " execution time: " + to_string(finish - start) + "µs\n");
+	}
+	HEAP_TRACE("directCallSpikes", output);
+	output("r = " + to_string(r) + "\n");
+}
+
+BOOST_AUTO_TEST_CASE(stdQueueSpikes) {
+	HEAP_MARK();
+	int r=19258499;
+	int dequeuedR;
+	std::queue<int> stdQueue;
+	for (int p=0; p<numberOfPasses; p++) {
+		unsigned long long start = TimeMeasurements::getMonotonicRealTimeUS();
+		for (unsigned int i=0; i<numberOfCalls; i++) {
+			stdQueue.push(r);
+			dequeuedR = stdQueue.front();
+			stdQueue.pop();
+			r ^= dequeuedR;
+		}
+		unsigned long long finish = TimeMeasurements::getMonotonicRealTimeUS();
+		output("directCallSpikes Pass " + to_string(p) + " execution time: " + to_string(finish - start) + "µs\n");
+	}
+	HEAP_TRACE("directCallSpikes", output);
+	output("r = " + to_string(r) + "\n");
+}
 
 BOOST_AUTO_TEST_SUITE_END();
 
