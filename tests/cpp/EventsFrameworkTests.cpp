@@ -44,7 +44,7 @@ public:
 //    return e = static_cast<E>(static_cast<std::underlying_type_t<E>>(e) + 1);
 //}
 
-template <typename _AnswerType, typename _ArgumentType, int _NListeners, int _NAnswers>
+template <typename _AnswerType, typename _ArgumentType, int _NListeners>
 struct EventLink {
 
 
@@ -63,8 +63,6 @@ struct EventLink {
 	// consumer
 	void (*answerlessConsumerProcedureReference) (const _ArgumentType&);
 	void (*answerfullConsumerProcedureReference) (const _ArgumentType&, _AnswerType*, std::mutex&);
-	_AnswerType* answerReferences[_NAnswers];
-	std::mutex   answerMutexes[_NAnswers];
 
 	// listeners
 	void (*listenerProcedureReferences[_NListeners]) (const _ArgumentType&);
@@ -78,9 +76,6 @@ struct EventLink {
 		// initialize listeners
 		memset(listenerProcedureReferences, '\0', sizeof(listenerProcedureReferences));
 		nListenerProcedureReferences = 0;
-		// initialize answers & mutexes
-		memset(answerReferences,    '\0', sizeof(answerReferences));
-		memset(answerMutexes,       '\0', sizeof(answerMutexes));
 	}
 
 	void setAnswerlessConsumer(void (&&consumerProcedureReference) (const _ArgumentType&)) {
@@ -117,6 +112,12 @@ struct EventLink {
 		nListenerProcedureReferences--;
 		listenerProcedureReferences[nListenerProcedureReferences] = nullptr;
 		return true;
+	}
+
+	inline void notifyEventListeners(const _ArgumentType& eventParameter) {
+		for (int i=0; i<this->nListenerProcedureReferences; i++) {
+			this->listenerProcedureReferences[i](eventParameter);
+		}
 	}
 
 	int findAvailableAnswerSlot() {
@@ -162,8 +163,8 @@ struct EventLink {
 
 };
 
-template <typename _AnswerType, typename _ArgumentType, int _NListeners, int _NAnswers>
-struct DirectEventLink : EventLink<_AnswerType, _ArgumentType, _NListeners, _NAnswers> {
+template <typename _AnswerType, typename _ArgumentType, int _NListeners>
+struct DirectEventLink : EventLink<_AnswerType, _ArgumentType, _NListeners> {
 
 	_AnswerType* answerObjectReference;
 	std::mutex   answerMutex;
@@ -172,11 +173,6 @@ struct DirectEventLink : EventLink<_AnswerType, _ArgumentType, _NListeners, _NAn
 	DirectEventLink(string eventName)
 			: EventLink<_AnswerType, _ArgumentType, _NListeners, _NAnswers>(eventName)  {}
 
-	inline void notifyEventListeners(const _ArgumentType& eventParameter) {
-		for (int i=0; i<this->nListenerProcedureReferences; i++) {
-			this->listenerProcedureReferences[i](eventParameter);
-		}
-	}
 
 	inline int reportEvent(const _ArgumentType& eventParameter, _AnswerType* answerObjectReference) override {
 		// sanity check
@@ -222,6 +218,103 @@ struct DirectEventLink : EventLink<_AnswerType, _ArgumentType, _NListeners, _NAn
 			reportEvent(eventParameter, &answer);
 			return &answer;
 		}
+	}
+
+};
+
+template <typename _QueueElement, typename _QueueSlotsType = uint_fast8_t>
+struct NonBlockingNonReentrantZeroCopyQueue;
+
+template <typename _AnswerType, typename _ArgumentType, int _NListeners, typename _QueueSlotsType>
+struct QueuedEventLink : EventLink<_AnswerType, _ArgumentType, _NListeners> {
+
+	// answers
+	struct AnswerfullEvent {
+		_AnswerType*    answerObjectReference;
+		_ArgumentType   eventParameter;
+		std::mutex      answerMutex;
+	};
+
+	// events buffer
+	AnswerfullEvent events[(size_t)std::numeric_limits<_QueueSlotsType>::max()+(size_t)1];
+
+	// events queues
+	NonBlockingNonReentrantPointerQueue<AnswerfullEvent,   _QueueSlotsType> toBeConsumedEvents;
+	NonBlockingNonReentrantPointerQueue<_ArgumentType, _QueueSlotsType>     toBeNotifyedEvents;
+
+	_QueueSlotsType eventsReferenceCounters[(size_t)std::numeric_limits<_QueueSlotsType>::max()+(size_t)1];
+	_QueueSlotsType eventIdSequence;
+
+	/* PARA AMANHÃ:
+	 *
+	 * x1) Eventos são consumidos nas duas filas acima, porém a fila dos que demandam resposta têm prioridade
+	 * x2) Os consumidores que demandam resposta não precisam dos dois arrays abaixo (respostas & mutexes). Ao contrário,
+	 *    a fila de resposta será um struct {eventParameter, answerReference, mutex}
+	 * 3) Os listeners são despachados por outra(s) thread(s), possivelmente independentes? ou pela(s) thread(s) do(s)
+	 *    consumidor(es), porém com prioridade ainda menor que a dos consumidores? Ou é possível escolher entre ambos?
+	 * 4) Eventos não são mais consumidos ou notificados por threads presentes aqui. Uma outra entidade, possivelmente
+	 *    chamada 'EventDispatcher', coordena a prioridade e número de threads dos consumidores e observadores.
+	 *    Algo assim: EventDispatcher{{{1, REAL_TIME}, {ReadDiskFile, -1}}, {{4, NORMAL}, {ProcessBackend, -1}, {UpdateCache, -2}}
+	 *    Agrupados estão os eventos UpdateCache e ProcessBackend para serem, ambos, processados por 4 Threads com prioridade normal, sendo que o ProcessBackend é mais prioritário: 1 UpdateCache só pode ser executado depois de dois ProcessBackends ou se não houverem ProcessBackends na fila
+	 *    Outro grupo é ReadDiskFile, contendo apenas 1 thread real time e um evento, ReadDiskFile. A prioridade aqui não precisaria ser especificada, visto que só há eles neste thread group
+	 *    Estas são as threads para os consumers. Faltou aqui especificar as threads para os listeners
+
+	*/
+
+
+	QueuedEventLink(string eventName)
+			: EventLink<_AnswerType, _ArgumentType, _NListeners>(eventName)
+			, eventIdSequence(0) {}
+
+	/** Reserves an 'eventId' (and returns it) for further enqueueing.
+	 *  Points 'eventParameterPointer' to a location able to be filled with the event information.
+	 *  Returns -1 is an event cannot be reserved. */
+	inline int reserveEventForReporting(_ArgumentType& eventParameterPointer, const _AnswerType& answerObjectReference) {
+		// find a free event slot 'eventId'
+		_QueueSlotsType eventId;
+		_QueueSlotsType counter = -1;
+		while ( eventsReferenceCounters[eventIdSequence] != 0 ) {
+			// events buffer are full?
+			if (counter == 0) {
+				return -1;
+			}
+			eventId = eventIdSequence++;
+			counter--;
+		}
+		// prepare the event slot and return the event id
+		eventsReferenceCounters[eventId]++;		// increment the event's reference counter, marking this slot as 'not available until consumed'
+		AnswerfullEvent& futureEvent       = events[eventId];
+		eventParameterPointer              = &futureEvent.eventParameter;
+		futureEvent.answerObjectReference  = answerObjectReference;
+		// prepare to wait for the answer
+		if (answerObjectReference != nullptr) {
+			futureEvent.answerMutex.try_lock();
+		}
+		return eventId;
+	}
+
+	inline int reserveEventForReporting(_ArgumentType& eventParameter) {
+		return reserveEventForReporting(eventParameter, nullptr);
+	}
+
+	inline void reportReservedEvent(_QueueSlotsType eventId) {
+		toBeConsumedEvents.enqueue(events[events]);
+		// do we have listeners?
+		if (this->nListenerProcedureReferences > 0) {
+			toBeNotifyedEvents.enqueue(events[events]);
+			eventsReferenceCounters[eventId]++;	// increment further the event's reference counter, marking this slot as 'not available until listened' as well
+		}
+	}
+
+	inline _AnswerType* waitForAnswer(int eventId) override {
+		AnswerfullEvent& event = events[eventId];
+		if (event.answerObjectReference == nullptr) {
+			THROW_EXCEPTION(runtime_error, "Attempting to wait for an answer from an event of '" + this->eventName + "', which was not prepared to produce an answer. "
+		                                   "Did you call 'reserveEventForReporting(_ArgumentType)' instead of 'reserveEventForReporting(_ArgumentType&, const _AnswerType&)' ?");
+		}
+		event.answerMutex.lock();
+		event.answerMutex.unlock();
+		return event.answerObjectReference;
 	}
 
 };
@@ -387,10 +480,106 @@ struct NonBlockingNonReentrantQueue {
 		memcpy(dequeuedElement, &backingArray[pos], sizeof(_QueueElement));
 		return true;
 	}
-
-
-
 };
+
+template <typename _QueueElement, typename _QueueSlotsType = uint_fast8_t>
+struct NonBlockingNonReentrantPointerQueue {
+
+	_QueueSlotsType queueHead;
+	_QueueSlotsType queueTail;
+	_QueueElement* backingArray[(size_t)std::numeric_limits<_QueueSlotsType>::max()+(size_t)1];	// an array sized like this allows implicit modulus operations on indexes of the same type (_QueueSlotsType)
+
+	NonBlockingNonReentrantPointerQueue()
+			: queueHead(0)
+			, queueTail(0) {}
+
+	// TODO another constructor might receive pointers to all local variables -- allowing for mmapped backed queues
+
+	inline bool enqueue(const _QueueElement& elementToEnqueue) {
+		_QueueSlotsType pos = queueTail++;
+		if (pos == queueHead) {
+			queueTail--;
+			return false;
+		}
+		backingArray[pos] = elementToEnqueue;
+		return true;
+	}
+
+	inline bool dequeue(_QueueElement& dequeuedElement) {
+		_QueueSlotsType pos = queueHead++;
+		if (pos == queueTail) {
+			queueHead--;
+			return false;
+		}
+		dequeuedElement = backingArray[pos];
+		return true;
+	}
+};
+
+template <typename _QueueElement, typename _QueueSlotsType = uint_fast8_t>
+struct NonBlockingNonReentrantZeroCopyQueue {
+
+	_QueueSlotsType queueHead;			// will never be behind of 'queueReservedHead'
+	_QueueSlotsType queueTail;			// will never be  ahead of 'queueReservedTail'
+	_QueueSlotsType queueReservedHead;	// will never be  ahead of 'queueHead'
+	_QueueSlotsType queueReservedTail;	// will never be behind of 'queueTail'
+	bool          reservations[(size_t)std::numeric_limits<_QueueSlotsType>::max()+(size_t)1];	// keeps track of the conceded but not yet enqueued & conceded but not yet dequeued positions
+	_QueueElement backingArray[(size_t)std::numeric_limits<_QueueSlotsType>::max()+(size_t)1];	// an array sized like this allows implicit modulus operations on indexes of the same type (_QueueSlotsType)
+
+	NonBlockingNonReentrantZeroCopyQueue()
+			: queueHead        (0)
+			, queueTail        (0)
+			, queueReservedTail(0)
+			, queueReservedHead(0) {}
+
+	// TODO another constructor might receive pointers to all local variables -- allowing for mmapped backed queues
+
+	/** points 'slotPointer' to a reserved queue position, for later enqueueing. When using this 'zero-copy' enqueueing method, do as follows:
+	 *    _QueueElement* element;
+	 *    if (reserveForEnqueue(element)) {
+	 *    	... (fill 'element' with data) ...
+	 *    	enqueueReservedSlot(element);
+	 *    } */
+	inline bool reserveForEnqueue(_QueueElement& slotPointer) {
+		_QueueSlotsType reservedPos = queueReservedTail++;
+		if (reservedPos == queueReservedHead) {
+			queueReservedTail--;
+			return false;
+		}
+		reservations[reservedPos] = true;
+		slotPointer = &backingArray[reservedPos];
+		return true;
+	}
+
+	inline void enqueueReservedSlot(const _QueueElement& slotPointer) {
+		_QueueSlotsType reservedPos = slotPointer-backingArray;
+		reservations[reservedPos] = false;
+		// walk with 'queueTail' for contiguous elements that had already concluded their reservations -- allowing them to be dequeued
+		while ( (!reservations[queueTail]) && (queueTail != queueReservedTail) ) {
+			queueTail++;
+		}
+	}
+
+	inline bool reserveForDequeue(_QueueElement& slotPointer) {
+		_QueueSlotsType reservedPos = queueHead++;
+		if (reservedPos == queueReservedTail) {
+			queueHead--;
+			return false;
+		}
+		reservations[reservedPos] = true;
+		slotPointer = &backingArray[reservedPos];
+		return true;
+	}
+
+	inline void dequeueReservedSlot(const _QueueElement& slotPointer) {
+		_QueueSlotsType reservedPos = slotPointer-backingArray;
+		reservations[reservedPos] = false;
+		while ( (!reservations[queueReservedHead]) && (queueReservedHead != queueHead) ) {
+			queueReservedHead++;
+		}
+	}
+};
+
 
 BOOST_FIXTURE_TEST_SUITE(QueueSuite, QueueSuiteObjects);
 
