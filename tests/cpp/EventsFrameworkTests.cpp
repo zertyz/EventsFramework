@@ -63,11 +63,12 @@ struct NonBlockingNonReentrantQueue {
 	inline bool enqueue(_QueueElement& elementToEnqueue) {
 		// check if queue is full -- the following increment has an implicit modulus operation on 'std::numeric_limits<_QueueSlotsType>::max'
 		_QueueSlotsType pos = queueTail++;
-		if (pos == queueHead) {
+		if (queueTail == queueHead) {
 			queueTail--;
 			return false;
 		}
-		memcpy(&backingArray[pos], &elementToEnqueue, sizeof(_QueueElement));
+		//memcpy(&backingArray[pos], &elementToEnqueue, sizeof(_QueueElement));
+		backingArray[pos] = elementToEnqueue;
 		return true;
 	}
 
@@ -78,7 +79,8 @@ struct NonBlockingNonReentrantQueue {
 			queueHead--;
 			return false;
 		}
-		memcpy(dequeuedElement, &backingArray[pos], sizeof(_QueueElement));
+		//memcpy(dequeuedElement, &backingArray[pos], sizeof(_QueueElement));
+		*dequeuedElement = backingArray[pos];
 		return true;
 	}
 };
@@ -98,7 +100,7 @@ struct NonBlockingNonReentrantPointerQueue {
 
 	inline bool enqueue(_QueueElement& elementToEnqueue) {
 		_QueueSlotsType pos = queueTail++;
-		if (pos == queueHead) {
+		if (queueTail == queueHead) {
 			queueTail--;
 			return false;
 		}
@@ -106,13 +108,13 @@ struct NonBlockingNonReentrantPointerQueue {
 		return true;
 	}
 
-	inline bool dequeue(_QueueElement*& dequeuedElement) {
+	inline bool dequeue(_QueueElement*& dequeuedElementPointer) {
 		_QueueSlotsType pos = queueHead++;
 		if (pos == queueTail) {
 			queueHead--;
 			return false;
 		}
-		dequeuedElement = backingArray[pos];
+		dequeuedElementPointer = backingArray[pos];
 		return true;
 	}
 };
@@ -359,6 +361,7 @@ struct QueuedEventLink : EventLink<_AnswerType, _ArgumentType, _NListeners> {
 
 	QueuedEventLink(string eventName)
 			: EventLink<_AnswerType, _ArgumentType, _NListeners>(eventName)
+			, eventsReferenceCounters{0}
 			, eventIdSequence(0) {}
 
 	/** Reserves an 'eventId' (and returns it) for further enqueueing.
@@ -393,15 +396,15 @@ struct QueuedEventLink : EventLink<_AnswerType, _ArgumentType, _NListeners> {
 	}
 
 	inline void reportReservedEvent(_QueueSlotsType eventId) {
-		toBeConsumedEvents.enqueue(events[eventId]);
+		cerr << "!enqueueing consumer: " << toBeConsumedEvents.enqueue(events[eventId]) << "!" << flush;
 		// do we have listeners?
 		if (this->nListenerProcedureReferences > 0) {
-			toBeNotifyedEvents.enqueue(events[eventId]);
+		cerr << "!enqueueing listener: " << toBeNotifyedEvents.enqueue(events[eventId]) << "!" << flush;
 			eventsReferenceCounters[eventId]++;	// increment further the event's reference counter, marking this slot as 'not available until listened' as well
 		}
 	}
 
-	inline _AnswerType* waitForAnswer(int eventId) {
+	inline _AnswerType* waitForAnswer(_QueueSlotsType eventId) {
 		AnswerfullEvent& event = events[eventId];
 		if (event.answerObjectReference == nullptr) {
 			THROW_EXCEPTION(runtime_error, "Attempting to wait for an answer from an event of '" + this->eventName + "', which was not prepared to produce an answer. "
@@ -437,29 +440,38 @@ struct QueueEventDispatcher {
 		//auto* dequeuedEvent = nullptr;
 		bool hasConsumableEvent;
 		bool hasListenableEvent;
-		cerr << " <<dispatchLoop started>> " << flush;
+cerr << "<<" << flush;
 		while (active) {
 			this_thread::sleep_for(chrono::milliseconds(1000));
 			// consumable event
 			hasConsumableEvent = el.toBeConsumedEvents.dequeue(dequeuedEvent);
+cerr << "consume: " << hasConsumableEvent << ";" << flush;
 			if (hasConsumableEvent) {
 				if (dequeuedEvent->answerObjectReference != nullptr) {
 					// answerfull consumable event
+cerr << " answerfull" << flush;
 					el.answerfullConsumerProcedureReference(dequeuedEvent->eventParameter, dequeuedEvent->answerObjectReference, dequeuedEvent->answerMutex);
+cerr << ";" << flush;
 				} else {
 					// answerless consumable event
+cerr << " answerless" << flush;
 					el.answerlessConsumerProcedureReference(dequeuedEvent->eventParameter);
+cerr << ";" << flush;
 				}
 				//static_cast<_QueuedEventLink>(el).eventsReferenceCounters[eventId]--;
 			}
 			// listenable event
 			hasListenableEvent = el.toBeNotifyedEvents.dequeue(dequeuedEvent);
+cerr << "listen: " << hasListenableEvent << ";" << flush;
 			if (hasListenableEvent) {
+cerr << " notifying" << flush;
 				el.notifyEventListeners(dequeuedEvent->eventParameter);
+cerr << ";" << flush;
 				//static_cast<_QueuedEventLink>(el).eventsReferenceCounters[eventId]--;
 			}
-			cerr << " <<one more dispatch loop>> " << flush;
+cerr << " +1; " << flush;
 		}
+cerr << ">>" << flush;
 	}
 
 };
@@ -548,10 +560,14 @@ BOOST_AUTO_TEST_CASE(apiUsageTest) {
 	qShits.addListener(_myListener);
 	qShits.setAnswerfullConsumer(_myShits);
 	double* reservedParameterReference;
+	this_thread::sleep_for(chrono::milliseconds(300));
+cerr << "||issueing event||" << flush;
 	eventId = qShits.reserveEventForReporting(reservedParameterReference, &answer);
+cerr << "||eventId is " << eventId << "||" << flush;
 	*reservedParameterReference = 15.49;
 	qShits.reportReservedEvent(eventId);
-	this_thread::sleep_for(chrono::milliseconds(1000));
+	//QueueEventDispatcher dShits(qShits);
+	this_thread::sleep_for(chrono::milliseconds(3000));
 	dShits.stopASAP();
 	cerr << "Queued Output is " << *qShits.waitForAnswer(eventId) << endl;
 }
@@ -620,9 +636,9 @@ BOOST_AUTO_TEST_CASE(NonBlockingNonReentrantQueueSpikes) {
 			r ^= dequeuedR;
 		}
 		unsigned long long finish = TimeMeasurements::getMonotonicRealTimeUS();
-		output("directCallSpikes Pass " + to_string(p) + " execution time: " + to_string(finish - start) + "µs\n");
+		output("NonBlockingNonReentrantQueueSpikes Pass " + to_string(p) + " execution time: " + to_string(finish - start) + "µs\n");
 	}
-	HEAP_TRACE("directCallSpikes", output);
+	HEAP_TRACE("NonBlockingNonReentrantQueueSpikes", output);
 	output("r = " + to_string(r) + "\n");
 }
 
@@ -640,9 +656,9 @@ BOOST_AUTO_TEST_CASE(stdQueueSpikes) {
 			r ^= dequeuedR;
 		}
 		unsigned long long finish = TimeMeasurements::getMonotonicRealTimeUS();
-		output("directCallSpikes Pass " + to_string(p) + " execution time: " + to_string(finish - start) + "µs\n");
+		output("stdQueueSpikes Pass " + to_string(p) + " execution time: " + to_string(finish - start) + "µs\n");
 	}
-	HEAP_TRACE("directCallSpikes", output);
+	HEAP_TRACE("stdQueueSpikes", output);
 	output("r = " + to_string(r) + "\n");
 }
 
