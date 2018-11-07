@@ -5,6 +5,7 @@
 #include <mutex>
 #include <future>
 #include <queue>
+#include <thread>
 using namespace std;
 
 #include <boost/test/unit_test.hpp>
@@ -43,6 +44,143 @@ public:
 //E &operator ++ (E &e) {
 //    return e = static_cast<E>(static_cast<std::underlying_type_t<E>>(e) + 1);
 //}
+
+
+template <typename _QueueElement, typename _QueueSlotsType = uint_fast8_t>
+struct NonBlockingNonReentrantQueue {
+
+	_QueueElement backingArray[(size_t)std::numeric_limits<_QueueSlotsType>::max()+(size_t)1];	// an array sized like this allows implicit modulus operations on indexes of the same type (_QueueSlotsType)
+	_QueueSlotsType queueHead;
+	_QueueSlotsType queueTail;
+
+	NonBlockingNonReentrantQueue() {
+		queueHead = 0;
+		queueTail = 0;
+	}
+
+	// TODO another constructor might receive pointers to all local variables -- allowing for mmapped backed queues
+
+	inline bool enqueue(_QueueElement& elementToEnqueue) {
+		// check if queue is full -- the following increment has an implicit modulus operation on 'std::numeric_limits<_QueueSlotsType>::max'
+		_QueueSlotsType pos = queueTail++;
+		if (pos == queueHead) {
+			queueTail--;
+			return false;
+		}
+		memcpy(&backingArray[pos], &elementToEnqueue, sizeof(_QueueElement));
+		return true;
+	}
+
+	inline bool dequeue(_QueueElement* dequeuedElement) {
+		// check if queue is empty -- the following increment has an implicit modulus operation on 'std::numeric_limits<_QueueSlotsType>::max'
+		_QueueSlotsType pos = queueHead++;
+		if (pos == queueTail) {
+			queueHead--;
+			return false;
+		}
+		memcpy(dequeuedElement, &backingArray[pos], sizeof(_QueueElement));
+		return true;
+	}
+};
+
+template <typename _QueueElement, typename _QueueSlotsType = uint_fast8_t>
+struct NonBlockingNonReentrantPointerQueue {
+
+	_QueueSlotsType queueHead;
+	_QueueSlotsType queueTail;
+	_QueueElement* backingArray[(size_t)std::numeric_limits<_QueueSlotsType>::max()+(size_t)1];	// an array sized like this allows implicit modulus operations on indexes of the same type (_QueueSlotsType)
+
+	NonBlockingNonReentrantPointerQueue()
+			: queueHead(0)
+			, queueTail(0) {}
+
+	// TODO another constructor might receive pointers to all local variables -- allowing for mmapped backed queues
+
+	inline bool enqueue(_QueueElement& elementToEnqueue) {
+		_QueueSlotsType pos = queueTail++;
+		if (pos == queueHead) {
+			queueTail--;
+			return false;
+		}
+		backingArray[pos] = &elementToEnqueue;
+		return true;
+	}
+
+	inline bool dequeue(_QueueElement*& dequeuedElement) {
+		_QueueSlotsType pos = queueHead++;
+		if (pos == queueTail) {
+			queueHead--;
+			return false;
+		}
+		dequeuedElement = backingArray[pos];
+		return true;
+	}
+};
+
+template <typename _QueueElement, typename _QueueSlotsType = uint_fast8_t>
+struct NonBlockingNonReentrantZeroCopyQueue {
+
+	_QueueSlotsType queueHead;			// will never be behind of 'queueReservedHead'
+	_QueueSlotsType queueTail;			// will never be  ahead of 'queueReservedTail'
+	_QueueSlotsType queueReservedHead;	// will never be  ahead of 'queueHead'
+	_QueueSlotsType queueReservedTail;	// will never be behind of 'queueTail'
+	bool          reservations[(size_t)std::numeric_limits<_QueueSlotsType>::max()+(size_t)1];	// keeps track of the conceded but not yet enqueued & conceded but not yet dequeued positions
+	_QueueElement backingArray[(size_t)std::numeric_limits<_QueueSlotsType>::max()+(size_t)1];	// an array sized like this allows implicit modulus operations on indexes of the same type (_QueueSlotsType)
+
+	NonBlockingNonReentrantZeroCopyQueue()
+			: queueHead        (0)
+			, queueTail        (0)
+			, queueReservedTail(0)
+			, queueReservedHead(0) {}
+
+	// TODO another constructor might receive pointers to all local variables -- allowing for mmapped backed queues
+
+	/** points 'slotPointer' to a reserved queue position, for later enqueueing. When using this 'zero-copy' enqueueing method, do as follows:
+	 *    _QueueElement* element;
+	 *    if (reserveForEnqueue(element)) {
+	 *    	... (fill 'element' with data) ...
+	 *    	enqueueReservedSlot(element);
+	 *    } */
+	inline bool reserveForEnqueue(_QueueElement& slotPointer) {
+		_QueueSlotsType reservedPos = queueReservedTail++;
+		if (reservedPos == queueReservedHead) {
+			queueReservedTail--;
+			return false;
+		}
+		reservations[reservedPos] = true;
+		slotPointer = &backingArray[reservedPos];
+		return true;
+	}
+
+	inline void enqueueReservedSlot(const _QueueElement& slotPointer) {
+		_QueueSlotsType reservedPos = slotPointer-backingArray;
+		reservations[reservedPos] = false;
+		// walk with 'queueTail' for contiguous elements that had already concluded their reservations -- allowing them to be dequeued
+		while ( (!reservations[queueTail]) && (queueTail != queueReservedTail) ) {
+			queueTail++;
+		}
+	}
+
+	inline bool reserveForDequeue(_QueueElement& slotPointer) {
+		_QueueSlotsType reservedPos = queueHead++;
+		if (reservedPos == queueReservedTail) {
+			queueHead--;
+			return false;
+		}
+		reservations[reservedPos] = true;
+		slotPointer = &backingArray[reservedPos];
+		return true;
+	}
+
+	inline void dequeueReservedSlot(const _QueueElement& slotPointer) {
+		_QueueSlotsType reservedPos = slotPointer-backingArray;
+		reservations[reservedPos] = false;
+		while ( (!reservations[queueReservedHead]) && (queueReservedHead != queueHead) ) {
+			queueReservedHead++;
+		}
+	}
+};
+
 
 template <typename _AnswerType, typename _ArgumentType, int _NListeners>
 struct EventLink {
@@ -119,48 +257,6 @@ struct EventLink {
 			this->listenerProcedureReferences[i](eventParameter);
 		}
 	}
-
-	int findAvailableAnswerSlot() {
-		for (int i=0; i<_NAnswers; i++) {
-			if (answerReferences[i] == nullptr) {
-				return i;
-			}
-		}
-		return -1;
-	}
-	int reserveAnswerSlot(_AnswerType* answerObjectReference) {
-		int eventId = findAvailableAnswerSlot();
-		if (eventId == -1) {
-			THROW_EXCEPTION(overflow_error, "Out of answer slots (max="+to_string(_NAnswers)+") while attempting to reserve one for a future '" + eventName + "' event answer " +
-			                                "(you may wish to increase '_NAnswers' at '" + eventName + "'s declaration)");
-		}
-		answerReferences[eventId] = answerObjectReference;
-		answerMutexes[eventId].try_lock();
-		return eventId;
-	}
-	inline virtual int reportEvent(const _ArgumentType& eventParameter, _AnswerType* answerObjectReference) {
-		int eventId = reserveAnswerSlot(answerObjectReference);
-		answerfullConsumerProcedureReference(eventParameter, answerObjectReference, answerMutexes[eventId]);
-		return eventId;
-	}
-	inline virtual void reportEvent(const _ArgumentType& eventParameter) {
-		answerlessConsumerProcedureReference(eventParameter);
-	}
-
-	inline virtual _AnswerType* waitForAnswer(int eventId) {
-		_AnswerType* answer = answerReferences[eventId];
-		answerMutexes[eventId].lock();
-		answerMutexes[eventId].unlock();
-		return answer;
-	}
-
-	// not used -- we now pass the mutex to the answerfull consumer
-	void reportAnswerIsReady(int eventId) {
-		answerMutexes[eventId].unlock();
-	}
-
-	inline virtual _AnswerType* reportEventAndWaitForAnswer(const _ArgumentType& eventParameter) = 0;
-
 };
 
 template <typename _AnswerType, typename _ArgumentType, int _NListeners>
@@ -171,10 +267,10 @@ struct DirectEventLink : EventLink<_AnswerType, _ArgumentType, _NListeners> {
 
 
 	DirectEventLink(string eventName)
-			: EventLink<_AnswerType, _ArgumentType, _NListeners, _NAnswers>(eventName)  {}
+			: EventLink<_AnswerType, _ArgumentType, _NListeners>(eventName)  {}
 
 
-	inline int reportEvent(const _ArgumentType& eventParameter, _AnswerType* answerObjectReference) override {
+	inline int reportEvent(const _ArgumentType& eventParameter, _AnswerType* answerObjectReference) {
 		// sanity check
 		if (!this->answerfullConsumerProcedureReference) {
 			THROW_EXCEPTION(runtime_error, "Attempting to report an answerfull consumable event '" + this->eventName + "' using a 'DirectEventLink' "
@@ -191,23 +287,23 @@ struct DirectEventLink : EventLink<_AnswerType, _ArgumentType, _NListeners> {
 		this->answerObjectReference = answerObjectReference;
 		this->answerfullConsumerProcedureReference(eventParameter, answerObjectReference, answerMutex);
 		// event notification
-		notifyEventListeners(eventParameter);
+		this->notifyEventListeners(eventParameter);
 		return 1;
 	}
 
-	inline void reportEvent(const _ArgumentType& eventParameter) override {
+	inline void reportEvent(const _ArgumentType& eventParameter) {
 		// answerless event consumption
 		this->answerlessConsumerProcedureReference(eventParameter);
 		// event notification
-		notifyEventListeners(eventParameter);
+		this->notifyEventListeners(eventParameter);
 	}
 
 	// no wait is needed on this implementation since the answer was already computed at the moment the event got reported with 'reportEvent(eventParameter, answerObjectReference)'
-	inline _AnswerType* waitForAnswer(int eventId) override {
+	inline _AnswerType* waitForAnswer(int eventId) {
 		return answerObjectReference;
 	}
 
-	inline _AnswerType* reportEventAndWaitForAnswer(const _ArgumentType& eventParameter) override {
+	inline _AnswerType* reportEventAndWaitForAnswer(const _ArgumentType& eventParameter) {
 		if constexpr (std::is_same<_AnswerType, void>::value) {
 			// method body when _AnswerType is void
 			this->answerfullConsumerProcedureReference(eventParameter, nullptr, answerMutex);
@@ -222,9 +318,6 @@ struct DirectEventLink : EventLink<_AnswerType, _ArgumentType, _NListeners> {
 
 };
 
-template <typename _QueueElement, typename _QueueSlotsType = uint_fast8_t>
-struct NonBlockingNonReentrantZeroCopyQueue;
-
 template <typename _AnswerType, typename _ArgumentType, int _NListeners, typename _QueueSlotsType>
 struct QueuedEventLink : EventLink<_AnswerType, _ArgumentType, _NListeners> {
 
@@ -233,14 +326,16 @@ struct QueuedEventLink : EventLink<_AnswerType, _ArgumentType, _NListeners> {
 		_AnswerType*    answerObjectReference;
 		_ArgumentType   eventParameter;
 		std::mutex      answerMutex;
+
+		AnswerfullEvent() {}
 	};
 
 	// events buffer
 	AnswerfullEvent events[(size_t)std::numeric_limits<_QueueSlotsType>::max()+(size_t)1];
 
 	// events queues
-	NonBlockingNonReentrantPointerQueue<AnswerfullEvent,   _QueueSlotsType> toBeConsumedEvents;
-	NonBlockingNonReentrantPointerQueue<_ArgumentType, _QueueSlotsType>     toBeNotifyedEvents;
+	NonBlockingNonReentrantPointerQueue<AnswerfullEvent, _QueueSlotsType> toBeConsumedEvents;
+	NonBlockingNonReentrantPointerQueue<AnswerfullEvent, _QueueSlotsType> toBeNotifyedEvents;
 
 	_QueueSlotsType eventsReferenceCounters[(size_t)std::numeric_limits<_QueueSlotsType>::max()+(size_t)1];
 	_QueueSlotsType eventIdSequence;
@@ -269,7 +364,7 @@ struct QueuedEventLink : EventLink<_AnswerType, _ArgumentType, _NListeners> {
 	/** Reserves an 'eventId' (and returns it) for further enqueueing.
 	 *  Points 'eventParameterPointer' to a location able to be filled with the event information.
 	 *  Returns -1 is an event cannot be reserved. */
-	inline int reserveEventForReporting(_ArgumentType& eventParameterPointer, const _AnswerType& answerObjectReference) {
+	inline int reserveEventForReporting(_ArgumentType*& eventParameterPointer, _AnswerType* answerObjectReference) {
 		// find a free event slot 'eventId'
 		_QueueSlotsType eventId;
 		_QueueSlotsType counter = -1;
@@ -298,15 +393,15 @@ struct QueuedEventLink : EventLink<_AnswerType, _ArgumentType, _NListeners> {
 	}
 
 	inline void reportReservedEvent(_QueueSlotsType eventId) {
-		toBeConsumedEvents.enqueue(events[events]);
+		toBeConsumedEvents.enqueue(events[eventId]);
 		// do we have listeners?
 		if (this->nListenerProcedureReferences > 0) {
-			toBeNotifyedEvents.enqueue(events[events]);
+			toBeNotifyedEvents.enqueue(events[eventId]);
 			eventsReferenceCounters[eventId]++;	// increment further the event's reference counter, marking this slot as 'not available until listened' as well
 		}
 	}
 
-	inline _AnswerType* waitForAnswer(int eventId) override {
+	inline _AnswerType* waitForAnswer(int eventId) {
 		AnswerfullEvent& event = events[eventId];
 		if (event.answerObjectReference == nullptr) {
 			THROW_EXCEPTION(runtime_error, "Attempting to wait for an answer from an event of '" + this->eventName + "', which was not prepared to produce an answer. "
@@ -315,6 +410,56 @@ struct QueuedEventLink : EventLink<_AnswerType, _ArgumentType, _NListeners> {
 		event.answerMutex.lock();
 		event.answerMutex.unlock();
 		return event.answerObjectReference;
+	}
+
+};
+
+template <class _QueuedEventLink>
+struct QueueEventDispatcher {
+
+	bool              active;
+	_QueuedEventLink& el;
+	thread            t;
+
+	QueueEventDispatcher(_QueuedEventLink& el)
+			: active(true)
+			, el(el) {
+		t = thread(&QueueEventDispatcher::dispatchLoop, this);
+	}
+
+	void stopASAP() {
+		active = false;
+	}
+
+	void dispatchLoop() {
+		//_QueuedEventLink::AnswerfullEvent* dequeuedEvent;
+		QueuedEventLink<int, double, 10, uint_fast8_t>::AnswerfullEvent* dequeuedEvent;
+		//auto* dequeuedEvent = nullptr;
+		bool hasConsumableEvent;
+		bool hasListenableEvent;
+		cerr << " <<dispatchLoop started>> " << flush;
+		while (active) {
+			this_thread::sleep_for(chrono::milliseconds(1000));
+			// consumable event
+			hasConsumableEvent = el.toBeConsumedEvents.dequeue(dequeuedEvent);
+			if (hasConsumableEvent) {
+				if (dequeuedEvent->answerObjectReference != nullptr) {
+					// answerfull consumable event
+					el.answerfullConsumerProcedureReference(dequeuedEvent->eventParameter, dequeuedEvent->answerObjectReference, dequeuedEvent->answerMutex);
+				} else {
+					// answerless consumable event
+					el.answerlessConsumerProcedureReference(dequeuedEvent->eventParameter);
+				}
+				//static_cast<_QueuedEventLink>(el).eventsReferenceCounters[eventId]--;
+			}
+			// listenable event
+			hasListenableEvent = el.toBeNotifyedEvents.dequeue(dequeuedEvent);
+			if (hasListenableEvent) {
+				el.notifyEventListeners(dequeuedEvent->eventParameter);
+				//static_cast<_QueuedEventLink>(el).eventsReferenceCounters[eventId]--;
+			}
+			cerr << " <<one more dispatch loop>> " << flush;
+		}
 	}
 
 };
@@ -371,17 +516,17 @@ BOOST_AUTO_TEST_CASE(apiUsageTest) {
 		[(int)MyEvents::EventB]=EventDefinition<int>(_myIShits),
 		[(int)MyEvents::EventC]=EventDefinition<int>(_myIShits)});
 
-	DirectEventLink<void, int   , 10, 4>    INT_SHITS("Integral shits");
+	DirectEventLink<void, int,   10>    INT_SHITS("Integral shits");
 	INT_SHITS.setAnswerlessConsumer(_myShits);
-	DirectEventLink<int, double, 10, 4> DOUBLE_SHITS("Double shits");
+	DirectEventLink<int, double, 10> DOUBLE_SHITS("Double shits");
 	DOUBLE_SHITS.setAnswerfullConsumer(_myShits);
-	DirectEventLink<void, float , 10, 4>  FLOAT_SHITS("Floating shits");
+	DirectEventLink<void, float, 10>  FLOAT_SHITS("Floating shits");
 	FLOAT_SHITS.setAnswerlessConsumer(_myShits);
 
 	double d=3.14159;
 	cerr << "My Output is " << *(DOUBLE_SHITS.reportEventAndWaitForAnswer(d)) << endl;
 
-	DirectEventLink<int, double, 10, 4> DirectEvent("MyDirectEV");
+	DirectEventLink<int, double, 10> DirectEvent("MyDirectEV");
 	DirectEvent.setAnswerfullConsumer(_myShits);
 	for (int i=0; i<10; i++) {
 		DirectEvent.addListener(_myListener);
@@ -396,6 +541,19 @@ BOOST_AUTO_TEST_CASE(apiUsageTest) {
 	cerr << "My delayed output is ";
 	DirectEvent.waitForAnswer(eventId);
 	cerr << answer << endl;
+
+	// queued event links
+	QueuedEventLink<int, double, 10, uint_fast8_t> qShits("Queued event double shits");
+	QueueEventDispatcher dShits(qShits);
+	qShits.addListener(_myListener);
+	qShits.setAnswerfullConsumer(_myShits);
+	double* reservedParameterReference;
+	eventId = qShits.reserveEventForReporting(reservedParameterReference, &answer);
+	*reservedParameterReference = 15.49;
+	qShits.reportReservedEvent(eventId);
+	this_thread::sleep_for(chrono::milliseconds(1000));
+	dShits.stopASAP();
+	cerr << "Queued Output is " << *qShits.waitForAnswer(eventId) << endl;
 }
 
 //BOOST_AUTO_TEST_CASE(apiUsageTest) {
@@ -445,140 +603,6 @@ struct QueueSuiteObjects {
 string QueueSuiteObjects::testOutput = "";
 
 
-template <typename _QueueElement, typename _QueueSlotsType = uint_fast8_t>
-struct NonBlockingNonReentrantQueue {
-
-	_QueueElement backingArray[(size_t)std::numeric_limits<_QueueSlotsType>::max()+(size_t)1];	// an array sized like this allows implicit modulus operations on indexes of the same type (_QueueSlotsType)
-	_QueueSlotsType queueHead;
-	_QueueSlotsType queueTail;
-
-	NonBlockingNonReentrantQueue() {
-		queueHead = 0;
-		queueTail = 0;
-	}
-
-	// TODO another constructor might receive pointers to all local variables -- allowing for mmapped backed queues
-
-	inline bool enqueue(_QueueElement& elementToEnqueue) {
-		// check if queue is full -- the following increment has an implicit modulus operation on 'std::numeric_limits<_QueueSlotsType>::max'
-		_QueueSlotsType pos = queueTail++;
-		if (pos == queueHead) {
-			queueTail--;
-			return false;
-		}
-		memcpy(&backingArray[pos], &elementToEnqueue, sizeof(_QueueElement));
-		return true;
-	}
-
-	inline bool dequeue(_QueueElement* dequeuedElement) {
-		// check if queue is empty -- the following increment has an implicit modulus operation on 'std::numeric_limits<_QueueSlotsType>::max'
-		_QueueSlotsType pos = queueHead++;
-		if (pos == queueTail) {
-			queueHead--;
-			return false;
-		}
-		memcpy(dequeuedElement, &backingArray[pos], sizeof(_QueueElement));
-		return true;
-	}
-};
-
-template <typename _QueueElement, typename _QueueSlotsType = uint_fast8_t>
-struct NonBlockingNonReentrantPointerQueue {
-
-	_QueueSlotsType queueHead;
-	_QueueSlotsType queueTail;
-	_QueueElement* backingArray[(size_t)std::numeric_limits<_QueueSlotsType>::max()+(size_t)1];	// an array sized like this allows implicit modulus operations on indexes of the same type (_QueueSlotsType)
-
-	NonBlockingNonReentrantPointerQueue()
-			: queueHead(0)
-			, queueTail(0) {}
-
-	// TODO another constructor might receive pointers to all local variables -- allowing for mmapped backed queues
-
-	inline bool enqueue(const _QueueElement& elementToEnqueue) {
-		_QueueSlotsType pos = queueTail++;
-		if (pos == queueHead) {
-			queueTail--;
-			return false;
-		}
-		backingArray[pos] = elementToEnqueue;
-		return true;
-	}
-
-	inline bool dequeue(_QueueElement& dequeuedElement) {
-		_QueueSlotsType pos = queueHead++;
-		if (pos == queueTail) {
-			queueHead--;
-			return false;
-		}
-		dequeuedElement = backingArray[pos];
-		return true;
-	}
-};
-
-template <typename _QueueElement, typename _QueueSlotsType = uint_fast8_t>
-struct NonBlockingNonReentrantZeroCopyQueue {
-
-	_QueueSlotsType queueHead;			// will never be behind of 'queueReservedHead'
-	_QueueSlotsType queueTail;			// will never be  ahead of 'queueReservedTail'
-	_QueueSlotsType queueReservedHead;	// will never be  ahead of 'queueHead'
-	_QueueSlotsType queueReservedTail;	// will never be behind of 'queueTail'
-	bool          reservations[(size_t)std::numeric_limits<_QueueSlotsType>::max()+(size_t)1];	// keeps track of the conceded but not yet enqueued & conceded but not yet dequeued positions
-	_QueueElement backingArray[(size_t)std::numeric_limits<_QueueSlotsType>::max()+(size_t)1];	// an array sized like this allows implicit modulus operations on indexes of the same type (_QueueSlotsType)
-
-	NonBlockingNonReentrantZeroCopyQueue()
-			: queueHead        (0)
-			, queueTail        (0)
-			, queueReservedTail(0)
-			, queueReservedHead(0) {}
-
-	// TODO another constructor might receive pointers to all local variables -- allowing for mmapped backed queues
-
-	/** points 'slotPointer' to a reserved queue position, for later enqueueing. When using this 'zero-copy' enqueueing method, do as follows:
-	 *    _QueueElement* element;
-	 *    if (reserveForEnqueue(element)) {
-	 *    	... (fill 'element' with data) ...
-	 *    	enqueueReservedSlot(element);
-	 *    } */
-	inline bool reserveForEnqueue(_QueueElement& slotPointer) {
-		_QueueSlotsType reservedPos = queueReservedTail++;
-		if (reservedPos == queueReservedHead) {
-			queueReservedTail--;
-			return false;
-		}
-		reservations[reservedPos] = true;
-		slotPointer = &backingArray[reservedPos];
-		return true;
-	}
-
-	inline void enqueueReservedSlot(const _QueueElement& slotPointer) {
-		_QueueSlotsType reservedPos = slotPointer-backingArray;
-		reservations[reservedPos] = false;
-		// walk with 'queueTail' for contiguous elements that had already concluded their reservations -- allowing them to be dequeued
-		while ( (!reservations[queueTail]) && (queueTail != queueReservedTail) ) {
-			queueTail++;
-		}
-	}
-
-	inline bool reserveForDequeue(_QueueElement& slotPointer) {
-		_QueueSlotsType reservedPos = queueHead++;
-		if (reservedPos == queueReservedTail) {
-			queueHead--;
-			return false;
-		}
-		reservations[reservedPos] = true;
-		slotPointer = &backingArray[reservedPos];
-		return true;
-	}
-
-	inline void dequeueReservedSlot(const _QueueElement& slotPointer) {
-		_QueueSlotsType reservedPos = slotPointer-backingArray;
-		reservations[reservedPos] = false;
-		while ( (!reservations[queueReservedHead]) && (queueReservedHead != queueHead) ) {
-			queueReservedHead++;
-		}
-	}
-};
 
 
 BOOST_FIXTURE_TEST_SUITE(QueueSuite, QueueSuiteObjects);
@@ -733,14 +757,14 @@ BOOST_AUTO_TEST_CASE(directEventLinkSpikes) {
 	HEAP_MARK();
 	int r=19258499;
 	_r=1234;
-	DirectEventLink<void, int, 10, 4> myEvent("directEventLinkSpikes");
+	DirectEventLink<void, int, 10> myEvent("directEventLinkSpikes");
 	myEvent.setAnswerlessConsumer(indirectlyCallableMethod);
 	//myEvent.addListener(indirectlyCallableMethod);
 	for (int p=0; p<numberOfPasses; p++) {
 		unsigned long long start = TimeMeasurements::getMonotonicRealTimeUS();
 		for (unsigned int i=0; i<numberOfCalls; i++) {
-			//myEvent.reportEvent(r);
-			myEvent.answerlessConsumerProcedureReference(r);
+			myEvent.reportEvent(r);
+			//myEvent.answerlessConsumerProcedureReference(r);
 			r ^= _r;
 		}
 		unsigned long long finish = TimeMeasurements::getMonotonicRealTimeUS();
