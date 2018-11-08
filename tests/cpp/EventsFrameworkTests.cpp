@@ -133,7 +133,8 @@ struct NonBlockingNonReentrantZeroCopyQueue {
 			: queueHead        (0)
 			, queueTail        (0)
 			, queueReservedTail(0)
-			, queueReservedHead(0) {}
+			, queueReservedHead(0)
+			, reservations{false} {}
 
 	// TODO another constructor might receive pointers to all local variables -- allowing for mmapped backed queues
 
@@ -327,7 +328,7 @@ struct QueuedEventLink : EventLink<_AnswerType, _ArgumentType, _NListeners> {
 	struct AnswerfullEvent {
 		_AnswerType*    answerObjectReference;
 		_ArgumentType   eventParameter;
-		std::mutex      answerMutex;
+		mutex           answerMutex;
 
 		AnswerfullEvent() {}
 	};
@@ -337,10 +338,17 @@ struct QueuedEventLink : EventLink<_AnswerType, _ArgumentType, _NListeners> {
 
 	// events queues
 	NonBlockingNonReentrantPointerQueue<AnswerfullEvent, _QueueSlotsType> toBeConsumedEvents;
-	NonBlockingNonReentrantPointerQueue<AnswerfullEvent, _QueueSlotsType> toBeNotifyedEvents;
+	//NonBlockingNonReentrantPointerQueue<AnswerfullEvent, _QueueSlotsType> toBeNotifyedEvents;
 
-	_QueueSlotsType eventsReferenceCounters[(size_t)std::numeric_limits<_QueueSlotsType>::max()+(size_t)1];
+	bool            reservations[(size_t)std::numeric_limits<_QueueSlotsType>::max()+(size_t)1];
 	_QueueSlotsType eventIdSequence;
+
+	// mutexes
+	mutex  reservationGuard;
+	mutex* fullGuard;
+	mutex  enqueueGuard;
+	mutex  dequeueGuard;
+	mutex* emptyGuard;
 
 	/* PARA AMANHÃ:
 	 *
@@ -361,26 +369,28 @@ struct QueuedEventLink : EventLink<_AnswerType, _ArgumentType, _NListeners> {
 
 	QueuedEventLink(string eventName)
 			: EventLink<_AnswerType, _ArgumentType, _NListeners>(eventName)
-			, eventsReferenceCounters{0}
+			, reservations{false}
 			, eventIdSequence(0) {}
 
 	/** Reserves an 'eventId' (and returns it) for further enqueueing.
 	 *  Points 'eventParameterPointer' to a location able to be filled with the event information.
 	 *  Returns -1 is an event cannot be reserved. */
 	inline int reserveEventForReporting(_ArgumentType*& eventParameterPointer, _AnswerType* answerObjectReference) {
+
 		// find a free event slot 'eventId'
 		_QueueSlotsType eventId;
 		_QueueSlotsType counter = -1;
-		while ( eventsReferenceCounters[eventIdSequence] != 0 ) {
-			// events buffer are full?
-			if (counter == 0) {
-				return -1;
-			}
+		do {
 			eventId = eventIdSequence++;
 			counter--;
+		} while ( (reservations[eventId] != false) && (counter != 0));
+		// events buffer are full?
+		if (counter == 0) {
+			return -1;
 		}
+
 		// prepare the event slot and return the event id
-		eventsReferenceCounters[eventId]++;		// increment the event's reference counter, marking this slot as 'not available until consumed'
+		reservations[eventId]              = true;
 		AnswerfullEvent& futureEvent       = events[eventId];
 		eventParameterPointer              = &futureEvent.eventParameter;
 		futureEvent.answerObjectReference  = answerObjectReference;
@@ -395,13 +405,94 @@ struct QueuedEventLink : EventLink<_AnswerType, _ArgumentType, _NListeners> {
 		return reserveEventForReporting(eventParameter, nullptr);
 	}
 
+	inline int reentrantlyReserveEventForReporting(_ArgumentType*& eventParameterPointer, _AnswerType* answerObjectReference) {
+
+		// find a free event slot 'eventId'
+		_QueueSlotsType eventId;
+		_QueueSlotsType counter = 0;
+		reservationGuard.lock();
+		do {
+			eventId = eventIdSequence++;
+			counter--;
+			// slots are full -- wait until 'reentrantlyReleaseSlot(...)' unlocks 'fullGuard'
+			if (counter == 0) {
+				fullGuard = &reservationGuard;
+				reservationGuard.lock();
+			}
+		} while (reservations[eventId] != false);
+		reservationGuard.unlock();
+
+		// prepare the event slot and return the event id
+		reservations[eventId]              = true;
+		AnswerfullEvent& futureEvent       = events[eventId];
+		eventParameterPointer              = &futureEvent.eventParameter;
+		futureEvent.answerObjectReference  = answerObjectReference;
+		// prepare to wait for the answer
+		if (answerObjectReference != nullptr) {
+			futureEvent.answerMutex.try_lock();
+		}
+		return eventId;
+	}
+
+	inline int reentrantlyReserveEventForReporting(_ArgumentType& eventParameter) {
+		return reentrantlyReserveEventForReporting(eventParameter, nullptr);
+	}
+
 	inline void reportReservedEvent(_QueueSlotsType eventId) {
 		cerr << "!enqueueing consumer: " << toBeConsumedEvents.enqueue(events[eventId]) << "!" << flush;
-		// do we have listeners?
-		if (this->nListenerProcedureReferences > 0) {
-		cerr << "!enqueueing listener: " << toBeNotifyedEvents.enqueue(events[eventId]) << "!" << flush;
-			eventsReferenceCounters[eventId]++;	// increment further the event's reference counter, marking this slot as 'not available until listened' as well
+		mutex* guard = emptyGuard;
+		emptyGuard = nullptr;
+		if (guard) {
+			guard->unlock();
 		}
+	}
+
+	inline void reentrantlyReportReservedEvent(_QueueSlotsType eventId) {
+		enqueueGuard.lock();
+		cerr << "!enqueueing consumer: " << toBeConsumedEvents.enqueue(events[eventId]) << "!" << flush;
+		mutex* guard = emptyGuard;
+		emptyGuard = nullptr;
+		if (guard) {
+			guard->unlock();
+		}
+		enqueueGuard.unlock();
+	}
+
+	inline bool dequeue(AnswerfullEvent*& dequeuedElementPointer) {
+		return toBeConsumedEvents.dequeue(dequeuedElementPointer);
+	}
+
+	inline AnswerfullEvent* reentrantlyDequeue(AnswerfullEvent*& dequeuedElementPointer) {
+		dequeueGuard.lock();
+		while (true) {
+			bool hadElement = toBeConsumedEvents.dequeue(dequeuedElementPointer);
+			if (hadElement) {
+				break;
+			} else {
+				// queue is empty -- wait until 'reentrantlyReportReservedEvent(...)' unlocks 'emptyGuard'
+				emptyGuard = &dequeueGuard;
+				dequeueGuard.lock();
+			}
+		}
+		dequeueGuard.unlock();
+		return dequeuedElementPointer;
+	}
+
+	inline _QueueSlotsType releaseSlot(AnswerfullEvent*& dequeuedElementPointer) {
+		_QueueSlotsType eventId = (dequeuedElementPointer - events);
+		reservations[eventId] = false;
+		return eventId;
+	}
+
+	inline _QueueSlotsType reentrantlyReleaseSlot(AnswerfullEvent*& dequeuedElementPointer) {
+		_QueueSlotsType eventId = (dequeuedElementPointer - events);
+		reservations[eventId] = false;
+		mutex* guard = fullGuard;
+		fullGuard = nullptr;
+		if (guard) {
+			guard->unlock();
+		}
+		return eventId;
 	}
 
 	inline _AnswerType* waitForAnswer(_QueueSlotsType eventId) {
@@ -431,22 +522,23 @@ struct QueueEventDispatcher {
 	}
 
 	void stopASAP() {
+		t.detach();
 		active = false;
 	}
 
 	void dispatchLoop() {
-		//_QueuedEventLink::AnswerfullEvent* dequeuedEvent;
-		QueuedEventLink<int, double, 10, uint_fast8_t>::AnswerfullEvent* dequeuedEvent;
+		typename _QueuedEventLink::AnswerfullEvent* dequeuedEvent;
+		//QueuedEventLink<int, double, 10, uint_fast8_t>::AnswerfullEvent* dequeuedEvent;
 		//auto* dequeuedEvent = nullptr;
-		bool hasConsumableEvent;
-		bool hasListenableEvent;
+		bool hadEvent;
 cerr << "<<" << flush;
 		while (active) {
-			this_thread::sleep_for(chrono::milliseconds(1000));
 			// consumable event
-			hasConsumableEvent = el.toBeConsumedEvents.dequeue(dequeuedEvent);
-cerr << "consume: " << hasConsumableEvent << ";" << flush;
-			if (hasConsumableEvent) {
+			//hadEvent = el.toBeConsumedEvents.dequeue(dequeuedEvent);
+			el.reentrantlyDequeue(dequeuedEvent);
+			hadEvent = true;
+cerr << "hasEvent: " << hadEvent << ";" << flush;
+			if (hadEvent) {
 				if (dequeuedEvent->answerObjectReference != nullptr) {
 					// answerfull consumable event
 cerr << " answerfull" << flush;
@@ -458,18 +550,16 @@ cerr << " answerless" << flush;
 					el.answerlessConsumerProcedureReference(dequeuedEvent->eventParameter);
 cerr << ";" << flush;
 				}
-				//static_cast<_QueuedEventLink>(el).eventsReferenceCounters[eventId]--;
-			}
+
 			// listenable event
-			hasListenableEvent = el.toBeNotifyedEvents.dequeue(dequeuedEvent);
-cerr << "listen: " << hasListenableEvent << ";" << flush;
-			if (hasListenableEvent) {
 cerr << " notifying" << flush;
-				el.notifyEventListeners(dequeuedEvent->eventParameter);
+			el.notifyEventListeners(dequeuedEvent->eventParameter);
 cerr << ";" << flush;
-				//static_cast<_QueuedEventLink>(el).eventsReferenceCounters[eventId]--;
+
+			// release event slot
+			unsigned int eventId = el.reentrantlyReleaseSlot(dequeuedEvent);
+cerr << " released eventId: " << eventId << "; " << flush;
 			}
-cerr << " +1; " << flush;
 		}
 cerr << ">>" << flush;
 	}
