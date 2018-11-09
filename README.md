@@ -13,7 +13,7 @@ Event driven architectures aims to increase development productivity by allowing
   - Plugin architectures
   - Declarative Programming (related to the program's control flow, in oposition to Imperative Programming)
 
-This framework provides mechanisms for efficient producing and consuming (and also notifying and observing) events. Events can be "consumed" or "observed". For instance, when a server receives a request it needs to provide a response -- this is an example of an event that was produced and consumed. On the other hand, when you plug a USB Stick on your computer, there might be a software to show the files: if there is, it will show; if there is not, nothing will happen. This is an example of an event who got notifyed but for which there may or may not be observers listening -- the computer will keep working fine if no one is listening for such events.
+This framework provides mechanisms for efficient producing and consuming (and also notifying and observing) events. Events can be "consumed" or "observed". For instance, when a server receives a request it needs to provide a response -- this is an example of an event that was produced and consumed. On the other hand, when you plug a USB Stick on your computer, there might be a software to show the files: if there is, it will show; if there is not, nothing will happen. This is an example of an event who got notifyed but for which there may or may not be observers listening -- the computer will keep working without flaws if no one is listening for such events.
 
 Consumable Events may also be synchronous or asynchronous; and require a functional or procedural consumer. Asynchronous events are the ones which you don't care when they are consumed and synchronous, the opposite. Functional consumers will produce an answer and procedural consumers will not. The folowing table shows the possible combinations:
 
@@ -23,20 +23,20 @@ Consumable Events may also be synchronous or asynchronous; and require a functio
 	  3         sync                   function           yes
 	  4         async                  function           no
 
-These classifications are important for they have performance implications. Case 2 is the most performant. Case 1 and 3 requires an additional queue to handle the answerd value or the "finished" signal. Case 4 is invalid: it must be reassigned as case 2 or 3.
+These classifications are important for they have performance implications. Case 2 is the most performant. Case 1 and 3 requires a mutex signaling to handle the answerd value or the "finished" flag. Case 4 is invalid: it must be reassigned as case 2 or 3.
 
   - An example of a "Synchronous Consumable Event" is the server response given above: the same socket that started the request must wait for the answer -- and the server thread must produce a consumable event, dispatch it to be processed elsewhere and wait until there is an answer to be written back to the socket.
   - An "Asynchronous Consumable Event" example might be a notification event, lets say, for the system operators in case some error was detected: the server produces the event and resumes it's business. The "Event Consumer for the Server's Notification Events" might, on another thread, choose to send an email, sms, mobile push notification or just log it. The event producer (the Server Internal Loop) don't need any answer from such events -- and these events should never be ignored as well: even if there are no consumers at the moment a Consumable Event is generated, this framework will keep track of it until one gets registered.
 
 Now, back to Listenable Events: they have some similarities to Consumable Events, but:
 
-  - Listenable Events may have zero or more listeners, while Consumable Events should have exactly one consumer -- here we are refering to "listener methods" and "consumer methods", not threads.
+  - Listenable Events may have zero or more listeners, while Consumable Events should have exactly one consumer -- here we are refering to "listener sub-routines" and "consumer sub-routines", not threads.
   - Listenable Events might be ignored -- if there are no listeners and events are notifyed, they are discarded. Conversely, when there are no consumers registered for a Consumable Event, they are enqueued or an error is thrown.
   - Listenable Events are not Synchronous nor Asynchronous for we don't care for any answer a listener might give us -- One can think of Listenable Events to be similar to "Asynchronous Consumable Events" in this regard.
 
 Sometimes there are cases in which it is difficult, by the definitions given above, to determine if we must consider an event a consumable or a listenable event:
 
-  - Imagine the server's mechanism for incrementing the usage metrics of their services: the event is generated with the needed information, but the main server code don't care if it will be listened by "Log Writters", "Metrics Gathering" or some sort of "DDoS Pattern Detection" algorithm. This should be considered a Listenable Event, since an instance of such server might work without these features.
+  - Imagine the server's mechanism for reporting that another request has just been attended to: the event is generated with the needed information, but the main server code don't care if it will be listened by "Log Writters", "Metrics Gathering" and/or some sort of "DDoS Pattern Detection" algorithm. This should be considered a Listenable Event, since an instance of such server might work without these features.
 
 
 The case for "Synchronous Consumable Event" vs method invocation
@@ -57,19 +57,19 @@ Which is remakably similar to a standard function call:
 
 So, before we dismiss the Synchronous Consumable Events, lets look at some features of this framework:
 
-  1) Distributed execution -- METHOD might be executed on another machine;
-  2) Interchanging the control flow without affecting the program logic -- METHOD might be executed on another machine or thread, for efficiency reasons, or on the same thread, for easily testing and debugging the logic;
-  3) Resource Optimization and Overloading Protection -- considering simultaneous MY_METHOD executions, there is likely to be a number which will produce the maximum executions per minute a machine can handle. Numbers above it will put the machine into an overloading state and numbers below it will not use all it's capacity. Regardless of the number of events produced, only n threads must be executing MY_METHODs;
-  4) Processing Latency lowering -- parallel execution of 'MY_METHOD' may start as soon as you have 'params'. When you're ready to get the 'answer', it will likely take less time;
-  5) Fault tolerancy and operational flexibility -- Events might get their execution delayed or even recorded on a fallback queue, but are never ignored.
+  1. Distributed execution -- _MY-METHOD_ might be executed on another machine;
+  2. Interchanging the control flow without affecting the program logic -- _MY-METHOD_ might be executed on another machine or thread, for efficiency reasons, or on the same thread, for easily testing and debugging the logic;
+  3. Resource Optimization and Overloading Protection -- considering simultaneous _MY-METHOD_ executions, there is likely to be a number which will produce the maximum executions per minute a machine can handle. Numbers above it will put the machine into an overloading state and numbers below it will not use all it's capacity. Regardless of the number of events produced, only _n_ threads must be executing _MY-METHOD_s;
+  4. Processing Latency lowering -- parallel execution of _MY-METHOD_ may start as soon as you have 'params'. When you're ready to get the 'answer', it will likely take less time;
+  5. Fault tolerancy and operational flexibility -- Events might get their execution delayed or even recorded on a fallback queue, but are never ignored. This is specially usefull when working in sync with a network machine (like a databse): if the connection has been dropped, the event processing may be transparently retryed.
 
 We consider any of the reasons above to be enough to justify the use case.
 
 Some examples further explaining the above cases:
 
-  3) Imagine a server processing requests that require some database queries. It, obviously, has an optimum number of threads to process such requests. Lets call this number: "n". A solution for this is to configure your server to handle "n" sockets at a time and you'll achieve the maximum throughput -- and you don't need this framework for that, provided all your clients will download the answers at the same speed. But what if you add some caching? Lets suppose that you queries will return the same results for the same service parameters. Now you will still have requests qurying the database, but not all "n" simultaneous connections will be doing it. By using this framework you can fine tune specific tasks like this and achive maximum throughput even if some clients are slow downloading your reply.
+  3 3. Imagine a server processing requests that require some database queries. It, obviously, has an optimum number of threads to process such requests. Lets call this number: "n". A solution for this is to configure your server to handle "n" sockets at a time and you'll achieve the maximum throughput -- and you don't need this framework for that, provided all your clients will download the answers at the same speed. But what if you add some caching? Lets suppose that you queries will return the same results for the same service parameters. Now you will still have requests qurying the database, but not all "n" simultaneous connections will be doing it. By using this framework you can fine tune specific tasks like this and achive maximum throughput even if some clients are slow downloading your reply.
 
-  4) Lower latency may be achieved when you are not at the maximum throughput -- the machine must have some idleness available. It happens by paralelizing requests. Imagine your server takes 3 independent database queries, from different databases. The traditional way is to execute Query1, Query2 and Query3 -- taking the time t1 + t2 + t3 to execute. If made parallel, it will take only max(t1, t2, t3). The pseudo code bellow illistrates the logic:
+  4 4. Lower latency may be achieved when you are not at the maximum throughput -- the machine must have some idleness available. It happens by paralelizing requests. Imagine your server needs to make 3 independent database queries, from different databases. The traditional way is to execute Query1, Query2 and Query3 -- taking the time t1 + t2 + t3 to execute. If made parallel, it will take only max(t1, t2, t3). The pseudo code bellow illistrates the logic:
 
 	q1Handle = reportConsumableEvent(QUERY1_EVENT, params1)
 	q2Handle = reportConsumableEvent(QUERY2_EVENT, params2)

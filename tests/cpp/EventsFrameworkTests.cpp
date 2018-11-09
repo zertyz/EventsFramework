@@ -6,6 +6,7 @@
 #include <future>
 #include <queue>
 #include <thread>
+#include <initializer_list>
 using namespace std;
 
 #include <boost/test/unit_test.hpp>
@@ -401,7 +402,7 @@ struct QueuedEventLink : EventLink<_AnswerType, _ArgumentType, _NListeners> {
 		return eventId;
 	}
 
-	inline int reserveEventForReporting(_ArgumentType& eventParameter) {
+	inline int reserveEventForReporting(_ArgumentType*& eventParameter) {
 		return reserveEventForReporting(eventParameter, nullptr);
 	}
 
@@ -658,7 +659,7 @@ struct QueuedClassEventLink {
 		return eventId;
 	}
 
-	inline int reserveEventForReporting(_ArgumentType& eventParameter) {
+	inline int reserveEventForReporting(_ArgumentType*& eventParameter) {
 		return reserveEventForReporting(eventParameter, nullptr);
 	}
 
@@ -691,12 +692,12 @@ struct QueuedClassEventLink {
 		return eventId;
 	}
 
-	inline int reentrantlyReserveEventForReporting(_ArgumentType& eventParameter) {
+	inline int reentrantlyReserveEventForReporting(_ArgumentType*& eventParameter) {
 		return reentrantlyReserveEventForReporting(eventParameter, nullptr);
 	}
 
 	inline void reportReservedEvent(_QueueSlotsType eventId) {
-		cerr << "!enqueueing consumer: " << toBeConsumedEvents.enqueue(events[eventId]) << "!" << flush;
+		toBeConsumedEvents.enqueue(events[eventId]);
 		mutex* guard = emptyGuard;
 		emptyGuard = nullptr;
 		if (guard) {
@@ -706,10 +707,10 @@ struct QueuedClassEventLink {
 
 	inline void reentrantlyReportReservedEvent(_QueueSlotsType eventId) {
 		enqueueGuard.lock();
-		cerr << "!enqueueing consumer: " << toBeConsumedEvents.enqueue(events[eventId]) << "!" << flush;
-		mutex* guard = emptyGuard;
-		emptyGuard = nullptr;
-		if (guard) {
+		toBeConsumedEvents.enqueue(events[eventId]);
+		if (emptyGuard) {
+			mutex* guard = emptyGuard;
+			emptyGuard = nullptr;
 			guard->unlock();
 		}
 		enqueueGuard.unlock();
@@ -744,9 +745,9 @@ struct QueuedClassEventLink {
 	inline _QueueSlotsType reentrantlyReleaseSlot(AnswerfullEvent*& dequeuedElementPointer) {
 		_QueueSlotsType eventId = (dequeuedElementPointer - events);
 		reservations[eventId] = false;
-		mutex* guard = fullGuard;
-		fullGuard = nullptr;
-		if (guard) {
+		if (fullGuard) {
+			mutex* guard = fullGuard;
+			fullGuard = nullptr;
 			guard->unlock();
 		}
 		return eventId;
@@ -770,42 +771,44 @@ struct QueueEventDispatcher {
 
 	bool              active;
 	_QueuedEventLink& el;
-	thread            t;
+	int               nThreads;
+	thread*           threads;
 
-	QueueEventDispatcher(_QueuedEventLink& el)
+	QueueEventDispatcher(_QueuedEventLink& el, int nThreads)
 			: active(true)
-			, el(el) {
-		t = thread(&QueueEventDispatcher::dispatchLoop, this);
+			, el(el)
+			, nThreads(nThreads) {
+		threads = new thread[nThreads];
+		for (int i=0; i<nThreads; i++) {
+			//cerr << "creating consumer thread #" << i << endl << flush;
+			threads[i] = thread(&QueueEventDispatcher::dispatchLoop, this);
+			//this_thread::sleep_for(chrono::milliseconds(300));
+		}
+	}
+
+	~QueueEventDispatcher() {
+		stopASAP();
+		delete[] threads;
 	}
 
 	void stopASAP() {
-		t.detach();
-		active = false;
+		if (active) {
+			for (int i=0; i<nThreads; i++) {
+				threads[i].detach();
+			}
+			active = false;
+		}
 	}
 
 	void dispatchLoop() {
 		typename _QueuedEventLink::AnswerfullEvent* dequeuedEvent;
-		//QueuedEventLink<int, double, 10, uint_fast8_t>::AnswerfullEvent* dequeuedEvent;
-		//auto* dequeuedEvent = nullptr;
-		bool hadEvent;
-cerr << "<<" << flush;
 		while (active) {
-			// consumable event
-			//hadEvent = el.toBeConsumedEvents.dequeue(dequeuedEvent);
-cerr << " waiting" << flush;
 			el.reentrantlyDequeue(dequeuedEvent);
-cerr << "; consuming" << flush;
 			el.consume(dequeuedEvent);
-			// listenable event
-cerr << "; notifying" << flush;
 			el.notifyEventListeners(dequeuedEvent->eventParameter);
-cerr << ";" << flush;
-
 			// release event slot
-			unsigned int eventId = el.reentrantlyReleaseSlot(dequeuedEvent);
-cerr << " released eventId: " << eventId << "; " << flush;
+			el.reentrantlyReleaseSlot(dequeuedEvent);
 		}
-cerr << ">>" << flush;
 	}
 
 };
@@ -890,7 +893,7 @@ BOOST_AUTO_TEST_CASE(apiUsageTest) {
 
 	// queued event links
 	QueuedEventLink<int, double, 10, uint_fast8_t> qShits("Queued event double shits");
-	QueueEventDispatcher dShits(qShits);
+	QueueEventDispatcher dShits(qShits, 1);
 	qShits.addListener(_myListener);
 	qShits.setAnswerfullConsumer(_myShits);
 	double* reservedParameterReference;
@@ -927,7 +930,9 @@ struct QueueEventLinkSuiteObjects {
 
 
     QueueEventLinkSuiteObjects()
-    		: answerfullyConsumedEvents{0} {
+    		: answerfullyConsumedEvents {0}
+    		, answerlessConsumedEvents  {0}
+    		, notifyedEvents            {0} {
     	static bool firstRun = true;
     	if (firstRun) {
 			cerr << endl << endl;
@@ -992,10 +997,19 @@ struct QueueEventLinkSuiteObjects {
 	inline void _eventListener512(const unsigned int& n) {
     	notifyedEvents[n]+=512;
 	}
-	inline void _eventListener1024(const unsigned int& n) {
-    	notifyedEvents[n]+=1024;
-	}
 
+	void checkAllElements(unsigned int consumerArray[65536], unsigned int listenerArray[65536], unsigned int expectedValue) {
+		for (int i=0; i<sizeof(consumerArray); i++) {
+			if (consumerArray[i] != expectedValue) {
+				BOOST_REQUIRE(consumerArray[i] == expectedValue);
+			}
+		}
+		for (int i=0; i<sizeof(listenerArray); i++) {
+			if (listenerArray[i] != expectedValue) {
+				BOOST_REQUIRE(listenerArray[i] == expectedValue);
+			}
+		}
+	}
 
 };
 // static initializers
@@ -1006,47 +1020,74 @@ BOOST_FIXTURE_TEST_SUITE(QueueEventLinkSuite, QueueEventLinkSuiteObjects);
 
 BOOST_AUTO_TEST_CASE(waitForAConsumableEvent) {
 	HEAP_MARK();
-	QueuedClassEventLink<unsigned int, unsigned int, 10, uint_fast8_t> qShits("Queued class event double shits");
-	QueueEventDispatcher dShits(qShits);
-	qShits.addListener(&QueueEventLinkSuiteObjects::_eventListener1, (QueueEventLinkSuiteObjects*)this);
-	qShits.setAnswerfullConsumer(&QueueEventLinkSuiteObjects::_answerfullEventConsumer, (QueueEventLinkSuiteObjects*)this);
-	unsigned int* reservedParameterReference;
+
+	QueuedClassEventLink<unsigned int, unsigned int, 10, uint_fast8_t> qShits("Queued class event with ints");
+	QueueEventDispatcher dShits(qShits, 1);
+
+	qShits.addListener(&QueueEventLinkSuiteObjects::_eventListener1,   (QueueEventLinkSuiteObjects*)this);
+	qShits.addListener(&QueueEventLinkSuiteObjects::_eventListener2,   (QueueEventLinkSuiteObjects*)this);
+	qShits.addListener(&QueueEventLinkSuiteObjects::_eventListener4,   (QueueEventLinkSuiteObjects*)this);
+	qShits.addListener(&QueueEventLinkSuiteObjects::_eventListener8,   (QueueEventLinkSuiteObjects*)this);
+	qShits.addListener(&QueueEventLinkSuiteObjects::_eventListener16,  (QueueEventLinkSuiteObjects*)this);
+	qShits.addListener(&QueueEventLinkSuiteObjects::_eventListener32,  (QueueEventLinkSuiteObjects*)this);
+	qShits.addListener(&QueueEventLinkSuiteObjects::_eventListener64,  (QueueEventLinkSuiteObjects*)this);
+	qShits.addListener(&QueueEventLinkSuiteObjects::_eventListener128, (QueueEventLinkSuiteObjects*)this);
+	qShits.addListener(&QueueEventLinkSuiteObjects::_eventListener256, (QueueEventLinkSuiteObjects*)this);
+	qShits.addListener(&QueueEventLinkSuiteObjects::_eventListener512, (QueueEventLinkSuiteObjects*)this);
+
+	qShits.setAnswerlessConsumer(&QueueEventLinkSuiteObjects::_answerlessEventConsumer, (QueueEventLinkSuiteObjects*)this);
+
 	this_thread::sleep_for(chrono::milliseconds(300));
-cerr << "||issueing event||" << flush;
-	unsigned int answer;
-	unsigned int eventId;
-	for (int i=789; i<819; i++) {
-		eventId = qShits.reserveEventForReporting(reservedParameterReference, &answer);
-cerr << "||eventId is " << eventId << "||" << flush;
-		*reservedParameterReference = i;
-		qShits.reportReservedEvent(eventId);
-	//QueueEventDispatcher dShits(qShits);
-		this_thread::sleep_for(chrono::milliseconds(1000));
-cerr << endl << flush;
-	}
+
+	BOOST_TEST(answerlessConsumedEvents[1] == 0, "Waiting for event consumption");
+	BOOST_TEST(          notifyedEvents[1] == 0, "Waiting for event notification");
+
+	unsigned int* reservedParameterReference;
+	unsigned int eventId = qShits.reserveEventForReporting(reservedParameterReference);
+	*reservedParameterReference = 1;
+	qShits.reportReservedEvent(eventId);
 	dShits.stopASAP();
-	cerr << "Queued Output is " << *qShits.waitForAnswer(eventId) << endl;
+
+	this_thread::sleep_for(chrono::milliseconds(10));
+
+	BOOST_TEST(answerlessConsumedEvents[1] == 1,    "Event consumption");
+	BOOST_TEST(          notifyedEvents[1] == 1023, "Event notification");
+
 	HEAP_TRACE("waitForAConsumableEvent", output);
 }
 
-BOOST_AUTO_TEST_CASE(stdQueueSpikes) {
+BOOST_AUTO_TEST_CASE(busyEventGeneration) {
 	HEAP_MARK();
-	int r=19258499;
-	int dequeuedR;
-	std::queue<int> stdQueue;
-	for (int p=0; p<numberOfPasses; p++) {
-		unsigned long long start = TimeMeasurements::getMonotonicRealTimeUS();
-		for (unsigned int i=0; i<numberOfCalls; i++) {
-			stdQueue.push(r);
-			dequeuedR = stdQueue.front();
-			stdQueue.pop();
-			r ^= dequeuedR;
+
+	QueuedClassEventLink<unsigned int, unsigned int, 10, uint_fast8_t> myEvent("busyEventGeneration tests");
+	QueueEventDispatcher myDispatcher(myEvent, 4);
+
+	myEvent.addListener(&QueueEventLinkSuiteObjects::_eventListener1,                    (QueueEventLinkSuiteObjects*)this);
+	myEvent.setAnswerlessConsumer(&QueueEventLinkSuiteObjects::_answerlessEventConsumer, (QueueEventLinkSuiteObjects*)this);
+
+	this_thread::sleep_for(chrono::milliseconds(300));
+
+	BOOST_TEST(answerlessConsumedEvents[1] == 0);
+	BOOST_TEST(          notifyedEvents[1] == 0);
+
+	unsigned int* reservedParameterReference;
+	unsigned int eventId;
+	for (int n=0; n<17; n++) {
+		for (int i=0; i<65536; i++) {
+			eventId = myEvent.reentrantlyReserveEventForReporting(reservedParameterReference);
+			*reservedParameterReference = i;
+			myEvent.reentrantlyReportReservedEvent(eventId);
 		}
-		unsigned long long finish = TimeMeasurements::getMonotonicRealTimeUS();
-		output("stdQueueSpikes Pass " + to_string(p) + " execution time: " + to_string(finish - start) + "µs\n");
 	}
-	HEAP_TRACE("stdQueueSpikes", output);
-	output("r = " + to_string(r) + "\n");
+
+	this_thread::sleep_for(chrono::milliseconds(1000));
+	myDispatcher.stopASAP();
+
+	checkAllElements(answerlessConsumedEvents, notifyedEvents, 17);
+	BOOST_TEST(answerlessConsumedEvents[1] == 17);
+	BOOST_TEST(          notifyedEvents[1] == 17);
+
+	HEAP_TRACE("busyEventGeneration", output);
 }
 
 BOOST_AUTO_TEST_SUITE_END();

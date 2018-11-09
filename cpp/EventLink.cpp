@@ -5,14 +5,16 @@
  *      Author: luiz
  */
 
-#include "IEventLink.h"
+#include "EventLink.h"
 
-IEventLink::IEventLink() {
+using namespace mutua::events;
+
+EventLink::EventLink() {
 	// TODO Auto-generated constructor stub
 
 }
 
-IEventLink::~IEventLink() {
+EventLink::~EventLink() {
 	// TODO Auto-generated destructor stub
 }
 
