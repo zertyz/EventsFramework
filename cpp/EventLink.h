@@ -1,10 +1,3 @@
-/*
- * IEventLink.h
- *
- *  Created on: Oct 24, 2018
- *      Author: luiz
- */
-
 #ifndef MUTUA_EVENTS_EVENTLINK_H_
 #define MUTUA_EVENTS_EVENTLINK_H_
 
@@ -21,10 +14,41 @@ namespace mutua::events {
      * Defines how event producers/consumers & notifyers/observers will communicate.
      *
     */
-	class EventLink {
+	template <class _ChildEventLink>
+    class EventLink {
+    
+    private:
+        _ChildEventLink& instance;
+
 	public:
-		EventLink();
-		virtual ~EventLink();
+
+        EventLink(_ChildEventLink& instance)
+                : instance(instance) {}
+
+        // debug info
+        inline string getEventName()                 { return instance.eventName; }
+        inline int    getNumberOfDispatcherThreads() { return instance.numberOfDispatcherThreads; }
+        inline bool   allowReentrantEventReporting() { return instance.allowReentrantEventReporting; }
+        inline bool   allowReentrantDispatching()    { return instance.allowReentrantDispatching; }
+        inline bool   isAnswerfull()                 { return instance.isAnswerfull; }
+        inline bool   isZeroCopy()                   { return instance.isZeroCopy; }
+
+        // api
+        setConsumer()
+        unsetConsumer()
+        addListener()
+        removeListener()
+
+        reserveEventForReporting()
+        reportReservedEvent()
+        reserveForDispatching()
+        release()
+
+        waitForAnswer()
+        notifyEventListeners()
+        consume()
+
+
 	};
 
 }
