@@ -41,8 +41,8 @@ namespace mutua::events {
 
         reserveEventForReporting()
         reportReservedEvent()
-        reserveForDispatching()
-        release()
+        reserveEventForDispatching()
+        releaseEvent()
 
         waitForAnswer()
         notifyEventListeners()
