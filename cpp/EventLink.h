@@ -1,6 +1,10 @@
 #ifndef MUTUA_EVENTS_EVENTLINK_H_
 #define MUTUA_EVENTS_EVENTLINK_H_
 
+#include <string>
+using namespace std;
+
+
 namespace mutua::events {
     /**
      * EventLink.h
@@ -34,7 +38,9 @@ namespace mutua::events {
         inline bool   isZeroCopy()                   { return instance.isZeroCopy; }
 
         // api
-        setConsumer()
+        /*
+        setAnswerlessConsumer()
+        setAnswerfullConsumer()
         unsetConsumer()
         addListener()
         removeListener()
@@ -42,13 +48,14 @@ namespace mutua::events {
         reserveEventForReporting()
         reportReservedEvent()
         reserveEventForDispatching()
-        releaseEvent()
 
         waitForAnswer()
         notifyEventListeners()
-        consume()
+		consumeAnswerlessEvent()
+		consumeAnswerfullEvent()
 
-
+        releaseEvent()
+*/
 	};
 
 }

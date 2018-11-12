@@ -1,6 +1,13 @@
 #ifndef MUTUA_EVENTS_QUEUEDCLASSEVENTLINK_H_
 #define MUTUA_EVENTS_QUEUEDCLASSEVENTLINK_H_
 
+#include <mutex>
+using namespace std;
+
+#include <BetterExceptions.h>
+using namespace mutua::cpputils;
+
+
 namespace mutua::events {
     /**
      * QueuedClassEventLink.h
@@ -22,7 +29,8 @@ namespace mutua::events {
             _ArgumentType   eventParameter;
             mutex           answerMutex;
 
-            QueueElement() {}
+            QueueElement()
+            		: answerObjectReference(nullptr) {}
         };
 
         // debug info
@@ -57,10 +65,6 @@ namespace mutua::events {
 
         QueuedClassEventLink(string eventName)
                 : eventName                            (eventName)
-                , answerlessConsumerProcedureReference (nullptr)
-                , answerfullConsumerProcedureReference (nullptr)
-                , answerlessConsumerThis               (nullptr)
-                , answerfullConsumerThis               (nullptr)
                 , listenerProcedureReferences          {nullptr}
                 , listenersThis                        {nullptr}
                 , nListenerProcedureReferences         (0)
@@ -70,7 +74,10 @@ namespace mutua::events {
                 , queueHead                            (0)
                 , queueTail                            (0)
                 , queueReservedHead                    (0)
-                , queueReservedTail                    (0) {}
+                , queueReservedTail                    (0) {
+
+			unsetConsumer();
+		}
 
         template <typename _Class> void setAnswerlessConsumer(void (_Class::*consumerProcedureReference) (const _ArgumentType&), _Class* consumerThis) {
             answerlessConsumerProcedureReference = reinterpret_cast<void (*) (void*, const _ArgumentType&)>(consumerProcedureReference);
@@ -80,6 +87,13 @@ namespace mutua::events {
         template <typename _Class> void setAnswerfullConsumer(void (_Class::*consumerProcedureReference) (const _ArgumentType&, _AnswerType*, std::mutex&), _Class* consumerThis) {
             answerfullConsumerProcedureReference = reinterpret_cast<void (*) (void*, const _ArgumentType&, _AnswerType*, std::mutex&)>(consumerProcedureReference);;
             answerfullConsumerThis               = consumerThis;
+        }
+
+        void unsetConsumer() {
+        	answerlessConsumerProcedureReference = nullptr;
+        	answerfullConsumerProcedureReference = nullptr;
+        	answerlessConsumerThis = nullptr;
+        	answerfullConsumerThis = nullptr;
         }
 
         template <typename _Class> void addListener(void (_Class::*listenerProcedureReference) (const _ArgumentType&), _Class* listenerThis) {
@@ -116,8 +130,9 @@ namespace mutua::events {
 
         /** Reserves an 'eventId' (and returns it) for further enqueueing.
          *  Points 'eventParameterPointer' to a location able to be filled with the event information.
-         *  This method blocks if the queue is full. */
-        inline int reentrantlyReserveEventForReporting(_ArgumentType*& eventParameterPointer, _AnswerType* answerObjectReference) {
+         *  'answerObjectReference' is a pointer where the 'answerfull' consumer should store the answer -- give a nullptr if the consumer is 'answerless'.
+         *  This method takes constant time but blocks if the queue is full. */
+        inline int reserveEventForReporting(_ArgumentType*& eventParameterPointer, _AnswerType* answerObjectReference) {
 
         FULL_QUEUE_RETRY:
             // reserve a queue slot
@@ -147,11 +162,16 @@ namespace mutua::events {
             return eventId;
         }
 
-        inline int reentrantlyReserveEventForReporting(_ArgumentType*& eventParameter) {
-            return reentrantlyReserveEventForReporting(eventParameter, nullptr);
+        /** Reserves an 'eventId' (and returns it) for further enqueueing.
+         *  Points 'eventParameterPointer' to a location able to be filled with the event information.
+         *  This method takes constant time but blocks if the queue is full. */
+        inline int reserveEventForReporting(_ArgumentType*& eventParameter) {
+            return reserveEventForReporting(eventParameter, nullptr);
         }
 
-        inline void reentrantlyReportReservedEvent(_QueueSlotsType eventId) {
+        /** Signals that the slot at 'eventId' is available for consumption / notification.
+         *  This method takes constant time -- a little bit longer if the queue is empty. */
+        inline void reportReservedEvent(_QueueSlotsType eventId) {
             // signal that the slot at 'eventId' is available for dequeueing
             reservations[eventId] = false;
             if (eventId == queueTail) {
@@ -165,14 +185,13 @@ namespace mutua::events {
             }
         }
 
-        inline bool dequeue(QueueElement*& dequeuedElementPointer) {
-            return toBeConsumedEvents.dequeue(dequeuedElementPointer);
-        }
-
-        inline _QueueSlotsType reentrantlyDequeue(QueueElement*& dequeuedElementPointer) {
+        /** Starts the zero-copy dequeueing process.
+         *  Points 'dequeuedElementPointer' to the queue location containing the event ready to be consumed & notified, returning the 'eventId'.
+         *  This method takes constant time but blocks if the queue is empty. */
+        inline _QueueSlotsType reserveEventForDispatching(QueueElement*& dequeuedElementPointer) {
             
         EMPTY_QUEUE_RETRY:
-            // dequeue but don't release yet
+            // dequeue but don't release the slot yet
             dequeueGuard.lock();
             if (queueHead == queueTail) {
                 if (reservations[queueTail]) {
@@ -192,12 +211,13 @@ namespace mutua::events {
         }
 
         /** Allow 'eventId' reuse (make that slot available for enqueueing a new element).
-          * Answerless events call it uppon consumption;
-          * Answerfull events call it after the event producer got hold of the 'answer' object reference. */
-        inline void reentrantlyReleaseSlot(_QueueSlotsType eventId) {
+          * Answerless events call it uppon consumption & notifications;
+          * Answerfull events call it after notifications and after the event producer gets hold of the 'answer' object reference.
+          * This method takes constant time -- a little longer when the queue is full. */
+        inline void releaseEvent(_QueueSlotsType eventId) {
             // signal that the slot at 'eventId' is available for enqueue reservations
             reservations[eventId] = false;
-            if (reservedPos == queueReservedHead) {
+            if (eventId == queueReservedHead) {
                 queueReservedHead++;
                 // unlock if someone was waiting on the full queue
                 if (fullGuard) {
@@ -225,8 +245,8 @@ namespace mutua::events {
             }
             event.answerMutex.lock();
             event.answerMutex.unlock();
-            reentrantlyReleaseSlot(eventId);  // we may release the slot, since 'answer' points to a provided location
             return event.answerObjectReference;
+            // we may now release the event slot if all listeners got notified already
         }
 
         inline void notifyEventListeners(const _ArgumentType& eventParameter) {
@@ -235,14 +255,19 @@ namespace mutua::events {
             }
         }
 
-        inline void consume(QueueElement* event, _QueueSlotsType eventId) {
-            if (event->answerObjectReference != nullptr) {
-                answerfullConsumerProcedureReference(answerfullConsumerThis, event->eventParameter, event->answerObjectReference, event->answerMutex);
+        /** Intended to be used by event dispatchers, this method consumes the event using the answerless consumer function pointer.
+         *  The queue slot may be immediately released for reused after all listeners get notified (see 'releaseEvent(...)') */
+        inline void consumeAnswerlessEvent(QueueElement* event, _QueueSlotsType eventId) {
+			answerlessConsumerProcedureReference(answerlessConsumerThis, event->eventParameter);
+        }
+
+        /** Intended to be used by event dispatchers, this method consumes the event using the answerfull consumer function pointer.
+         *  The queue slot may be released for reused (with 'releaseEvent(...)') after:
+         *  1) all listeners get notified;
+         *  2) the event producer got the 'answer is ready' notification, with 'waitForAnswer(...)' */
+        inline void consumeAnswerfullEvent(QueueElement* event, _QueueSlotsType eventId) {
+			answerfullConsumerProcedureReference(answerfullConsumerThis, event->eventParameter, event->answerObjectReference, event->answerMutex);
                 //reentrantlyReleaseSlot(eventId);  must only be released after the producer gets hold of 'answer'
-            } else {
-                answerlessConsumerProcedureReference(answerlessConsumerThis, event->eventParameter);
-                reentrantlyReleaseSlot(eventId);    // the queue slot may be immediately reused
-            }
         }
 
     };
