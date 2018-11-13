@@ -1067,7 +1067,7 @@ BOOST_AUTO_TEST_CASE(waitForAConsumableEvent) {
 BOOST_AUTO_TEST_CASE(alternativelyWaitForAConsumableEvent) {
 	HEAP_MARK();
 
-	mutua::events::QueueEventLink<unsigned int, unsigned int, 10, uint_fast8_t> qShits("alternativelyWaitForAConsumableEvent");
+	mutua::events::QueueEventLink<unsigned int, unsigned int, 10, 8> qShits("alternativelyWaitForAConsumableEvent");
 
 	qShits.addListener(&QueueEventLinkSuiteObjects::_eventListener1,   (QueueEventLinkSuiteObjects*)this);
 	qShits.addListener(&QueueEventLinkSuiteObjects::_eventListener2,   (QueueEventLinkSuiteObjects*)this);
@@ -1094,7 +1094,7 @@ BOOST_AUTO_TEST_CASE(alternativelyWaitForAConsumableEvent) {
 	qShits.reportReservedEvent(eventId);
 	cerr << "Event was just reported" << endl << flush;
 
-	typename mutua::events::QueueEventLink<unsigned int, unsigned int, 10, uint_fast8_t>::QueueElement* dequeuedEvent;
+	typename mutua::events::QueueEventLink<unsigned int, unsigned int, 10, 8>::QueueElement* dequeuedEvent;
 	unsigned int dispatchedEventId = qShits.reserveEventForDispatching(dequeuedEvent);
 	cerr << "Obtained dispatched eventId is " << dispatchedEventId << endl << flush;
 	qShits.consumeAnswerlessEvent(dequeuedEvent);
@@ -1150,7 +1150,7 @@ BOOST_AUTO_TEST_CASE(alternativelyWaitForAConsumableEvent) {
 BOOST_AUTO_TEST_CASE(alternativelyBusyEventGeneration) {
 	HEAP_MARK();
 
-	mutua::events::QueueEventLink<unsigned int, unsigned int, 10, uint_fast8_t> myEvent("alternativelyBusyEventGeneration tests");
+	mutua::events::QueueEventLink<unsigned int, unsigned int, 10, 8> myEvent("alternativelyBusyEventGeneration tests");
 	mutua::events::QueueEventDispatcher myDispatcher(myEvent, 1);
 
 	myEvent.addListener          (&QueueEventLinkSuiteObjects::_eventListener1,          (QueueEventLinkSuiteObjects*)this);

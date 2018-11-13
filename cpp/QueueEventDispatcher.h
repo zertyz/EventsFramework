@@ -32,14 +32,14 @@ namespace mutua::events {
 		QueueEventDispatcher(_QueueEventLink& el, int nThreads)
 				: isActive(true)
 				, el(el)
-				, nThreads(nThreads+1) {
-			threads = new thread[nThreads+1];
+				, nThreads(nThreads/*+1*/) {
+			threads = new thread[nThreads/*+1*/];
 			for (int i=0; i<nThreads; i++) {
 //cerr << "creating consumer thread #" << i << endl << flush;
 				threads[i] = thread(&QueueEventDispatcher::dispatchAnswerlessEventsLoop, this, i);
 //this_thread::sleep_for(chrono::milliseconds(300));
 			}
-			threads[nThreads] = thread(&QueueEventDispatcher::debug, this);
+			/*threads[nThreads] = thread(&QueueEventDispatcher::debug, this);*/
 		}
 
 		~QueueEventDispatcher() {
@@ -63,9 +63,9 @@ namespace mutua::events {
 			decltype(_QueueEventLink::queueHead)    eventId;
 			while (isActive) {
 				eventId = el.reserveEventForDispatching(dequeuedEvent);
-				if (threadId == 5826) {
-					cerr << "thread #" << threadId << " got '" << dequeuedEvent->eventParameter << "'\n" << flush;
-				}
+//				if (threadId == 5826) {
+//					cerr << "thread #" << threadId << " got '" << dequeuedEvent->eventParameter << "'\n" << flush;
+//				}
 				el.consumeAnswerlessEvent(dequeuedEvent);
 				el.notifyEventListeners(dequeuedEvent->eventParameter);
 				el.releaseEvent(eventId);
