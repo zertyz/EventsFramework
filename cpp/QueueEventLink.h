@@ -144,7 +144,7 @@ namespace mutua::events {
             // reserve a queue slot
             reservationGuard.lock();
             if (((queueReservedTail+1) & 0xFF) == queueReservedHead) {
-                if (!reservations[queueReservedHead]) {
+                if ( reservations[queueReservedHead] || (queueReservedHead == queueHead) ) {
                     // queue is full. Wait
                     fullGuard = &reservationGuard;
                     goto FULL_QUEUE_RETRY;
@@ -202,7 +202,7 @@ namespace mutua::events {
             // dequeue but don't release the slot yet
             dequeueGuard.lock();
             if (queueHead == queueTail) {
-                if (!reservations[queueTail]) {
+                if ( reservations[queueTail] || (queueTail == queueReservedTail) ) {
                     // queue is empty -- wait until 'reentrantlyReportReservedEvent(...)' unlocks 'emptyGuard'
                     emptyGuard = &dequeueGuard;
                     goto EMPTY_QUEUE_RETRY;

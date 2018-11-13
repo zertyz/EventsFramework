@@ -36,7 +36,7 @@ namespace mutua::events {
 			threads = new thread[nThreads+1];
 			for (int i=0; i<nThreads; i++) {
 //cerr << "creating consumer thread #" << i << endl << flush;
-				threads[i] = thread(&QueueEventDispatcher::dispatchAnswerlessEventsLoop, this);
+				threads[i] = thread(&QueueEventDispatcher::dispatchAnswerlessEventsLoop, this, i);
 //this_thread::sleep_for(chrono::milliseconds(300));
 			}
 			threads[nThreads] = thread(&QueueEventDispatcher::debug, this);
@@ -58,11 +58,14 @@ namespace mutua::events {
 			}
 		}
 
-		void dispatchAnswerlessEventsLoop() {
+		void dispatchAnswerlessEventsLoop(int threadId) {
 			typename _QueueEventLink::QueueElement* dequeuedEvent;
 			decltype(_QueueEventLink::queueHead)    eventId;
 			while (isActive) {
 				eventId = el.reserveEventForDispatching(dequeuedEvent);
+				if (threadId % 333 == 0) {
+					cerr << "thread #" << threadId << " got '" << dequeuedEvent->eventParameter << "'\n" << flush;
+				}
 				el.consumeAnswerlessEvent(dequeuedEvent);
 				el.notifyEventListeners(dequeuedEvent->eventParameter);
 				el.releaseEvent(eventId);

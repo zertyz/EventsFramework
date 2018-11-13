@@ -969,8 +969,8 @@ struct QueueEventLinkSuiteObjects {
 	unsigned int answerlessConsumedEvents[65536];
 	inline void _answerlessEventConsumer(const unsigned int& n) {
     	answerlessConsumedEvents[n]++;
-    	/*if (n%10 == 0)*/ this_thread::sleep_for(chrono::milliseconds(100));
-		cerr << n << ((n%26 == 0) ? ",\n" : ",") << flush;
+//    	if (n%10 == 0) this_thread::sleep_for(chrono::milliseconds(1));
+//		cerr << n << ((n%26 == 0) ? ",\n" : ",") << flush;
 	}
 	unsigned int notifyedEvents[65536];
 	inline void _eventListener1(const unsigned int& n) {
@@ -1151,13 +1151,13 @@ BOOST_AUTO_TEST_CASE(alternativelyBusyEventGeneration) {
 	HEAP_MARK();
 
 	mutua::events::QueueEventLink<unsigned int, unsigned int, 10, uint_fast8_t> myEvent("alternativelyBusyEventGeneration tests");
-	mutua::events::QueueEventDispatcher myDispatcher(myEvent, 100);
+	mutua::events::QueueEventDispatcher myDispatcher(myEvent, 1000);
 
 	myEvent.addListener          (&QueueEventLinkSuiteObjects::_eventListener1,          (QueueEventLinkSuiteObjects*)this);
 	myEvent.setAnswerlessConsumer(&QueueEventLinkSuiteObjects::_answerlessEventConsumer, (QueueEventLinkSuiteObjects*)this);
 
 	cerr << "coco antes" << endl << flush;
-	this_thread::sleep_for(chrono::milliseconds(3000));
+	this_thread::sleep_for(chrono::milliseconds(300));
 	cerr << "coco depois" << endl << flush;
 
 	BOOST_TEST(answerlessConsumedEvents[1] == 0);
@@ -1171,7 +1171,8 @@ BOOST_AUTO_TEST_CASE(alternativelyBusyEventGeneration) {
 			*reservedParameterReference = i;
 			myEvent.reportReservedEvent(eventId);
 			//cerr << "Reported eventId " << eventId << " = " << i << endl << flush;
-			this_thread::sleep_for(chrono::milliseconds(16));
+			if (i%10 == 0) this_thread::sleep_for(chrono::milliseconds(1));
+			//this_thread::sleep_for(chrono::milliseconds(16));
 		}
 	}
 
