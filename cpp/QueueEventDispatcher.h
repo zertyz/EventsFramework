@@ -1,6 +1,7 @@
 #ifndef MUTUA_EVENTS_QUEUEEVENTDISPATCHER_H_
 #define MUTUA_EVENTS_QUEUEEVENTDISPATCHER_H_
 
+#include <iostream>
 #include <thread>
 #include <initializer_list>
 using namespace std;
@@ -31,13 +32,14 @@ namespace mutua::events {
 		QueueEventDispatcher(_QueueEventLink& el, int nThreads)
 				: isActive(true)
 				, el(el)
-				, nThreads(nThreads) {
-			threads = new thread[nThreads];
+				, nThreads(nThreads+1) {
+			threads = new thread[nThreads+1];
 			for (int i=0; i<nThreads; i++) {
 //cerr << "creating consumer thread #" << i << endl << flush;
 				threads[i] = thread(&QueueEventDispatcher::dispatchAnswerlessEventsLoop, this);
 //this_thread::sleep_for(chrono::milliseconds(300));
 			}
+			threads[nThreads] = thread(&QueueEventDispatcher::debug, this);
 		}
 
 		~QueueEventDispatcher() {
@@ -46,8 +48,10 @@ namespace mutua::events {
 		}
 
 		void stopASAP() {
+			std::cerr << "Tentando parar..." << std::endl << std::flush;
 			if (isActive) {
 				for (int i=0; i<nThreads; i++) {
+					std::cerr << "detaching thread #" << i << std::endl << std::flush;
 					threads[i].detach();
 				}
 				isActive = false;
@@ -55,12 +59,20 @@ namespace mutua::events {
 		}
 
 		void dispatchAnswerlessEventsLoop() {
-			typename _QueueEventLink::AnswerfullEvent* dequeuedEvent;
+			typename _QueueEventLink::QueueElement* dequeuedEvent;
+			decltype(_QueueEventLink::queueHead)    eventId;
 			while (isActive) {
-				el.reserveEventForDispatching(dequeuedEvent);
+				eventId = el.reserveEventForDispatching(dequeuedEvent);
 				el.consumeAnswerlessEvent(dequeuedEvent);
 				el.notifyEventListeners(dequeuedEvent->eventParameter);
-				el.releaseEvent(dequeuedEvent);
+				el.releaseEvent(eventId);
+			}
+		}
+
+		void debug() {
+			while (isActive) {
+				cerr << "\nrHead=" << el.queueReservedHead << "; rTail=" << el.queueReservedTail << "; ((queueReservedHead+1) & 0xFF)=" << ((el.queueReservedTail+1) & 0xFF) << "; reservations[queueReservedHead]=" << el.reservations[el.queueReservedHead] << endl << flush;
+				this_thread::sleep_for(chrono::milliseconds(1000));
 			}
 		}
 

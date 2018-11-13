@@ -1,17 +1,22 @@
-#ifndef MUTUA_EVENTS_QUEUEDCLASSEVENTLINK_H_
-#define MUTUA_EVENTS_QUEUEDCLASSEVENTLINK_H_
+#ifndef MUTUA_EVENTS_QUEUEEVENTLINK_H_
+#define MUTUA_EVENTS_QUEUEEVENTLINK_H_
 
+#include <iostream>
 #include <mutex>
 using namespace std;
 
 #include <BetterExceptions.h>
 using namespace mutua::cpputils;
 
+// increment 'i', respecting modulus
+#define MODINC(i)      i=   (i+1)  & 0xFF;
+// set 's' to 'i', then increment 'i', respecting modulus
+#define SETMODINC(s,i) i=((s=i)+1) & 0xFF;
 
 namespace mutua::events {
     /**
-     * QueuedClassEventLink.h
-     * ======================
+     * QueueEventLink.h
+     * ================
      * created (in Java) by luiz, Jan 23, 2015, as IEventLink.java
      * transcoded to C++ by luiz, Oct 24, 2018
      * last transcoding  by luiz, Nov  9, 2018
@@ -19,9 +24,10 @@ namespace mutua::events {
      * Queue based communications between event producers/consumers & notifyers/observers.
      *
     */
-	
     template <typename _AnswerType, typename _ArgumentType, int _NListeners, typename _QueueSlotsType>
-    class QueuedClassEventLink {
+    class QueueEventLink {
+
+    public:
 
         // answers
         struct QueueElement {
@@ -55,15 +61,15 @@ namespace mutua::events {
         mutex* emptyGuard;
 
         // queue
-        QueueElement    events      [(size_t)std::numeric_limits<_QueueSlotsType>::max()+(size_t)1];  // an array sized like this allows implicit modulus operations on indexes of the same type (_QueueSlotsType)
-        bool            reservations[(size_t)std::numeric_limits<_QueueSlotsType>::max()+(size_t)1];  // keeps track of the conceded but not yet enqueued & conceded but not yet dequeued positions
-        _QueueSlotsType queueHead;          // will never be behind of 'queueReservedHead'
-        _QueueSlotsType queueTail;          // will never be  ahead of 'queueReservedTail'
-        _QueueSlotsType queueReservedHead;  // will never be  ahead of 'queueHead'
-        _QueueSlotsType queueReservedTail;  // will never be behind of 'queueTail'
+        QueueElement events      [(size_t)std::numeric_limits<_QueueSlotsType>::max()+(size_t)1];  // an array sized like this allows implicit modulus operations on indexes of the same type (_QueueSlotsType)
+        bool         reservations[(size_t)std::numeric_limits<_QueueSlotsType>::max()+(size_t)1];  // keeps track of the conceded but not yet enqueued & conceded but not yet dequeued positions
+        unsigned int queueHead;          // will never be behind of 'queueReservedHead'
+        unsigned int queueTail;          // will never be  ahead of 'queueReservedTail'
+        unsigned int queueReservedHead;  // will never be  ahead of 'queueHead'
+        unsigned int queueReservedTail;  // will never be behind of 'queueTail'
 
 
-        QueuedClassEventLink(string eventName)
+        QueueEventLink(string eventName)
                 : eventName                            (eventName)
                 , listenerProcedureReferences          {nullptr}
                 , listenersThis                        {nullptr}
@@ -137,18 +143,20 @@ namespace mutua::events {
         FULL_QUEUE_RETRY:
             // reserve a queue slot
             reservationGuard.lock();
-            if (queueReservedHead-queueReservedTail == 1) {
-                if (reservations[queueReservedHead]) {
+            if (((queueReservedTail+1) & 0xFF) == queueReservedHead) {
+                if (!reservations[queueReservedHead]) {
                     // queue is full. Wait
                     fullGuard = &reservationGuard;
                     goto FULL_QUEUE_RETRY;
                     //reservationGuard.lock();
                 } else {
-                    queueReservedHead++;
+                	MODINC(queueReservedHead);
                 }
             }
-            _QueueSlotsType eventId = queueReservedTail++;
+            unsigned int eventId;
+            SETMODINC(eventId, queueReservedTail);
             reservationGuard.unlock();
+//cerr << "rHead=" << (int)queueReservedHead << "; rTail=" << (int)queueReservedTail << "; ((queueReservedHead+1) & 0xFF)=" << ((queueReservedHead+1) & 0xFF) << "; reservations[queueReservedHead]=" << reservations[queueReservedHead] << "; eventId=" << eventId << endl << flush;
 
             // prepare the event slot and return the event id
             reservations[eventId]              = true;
@@ -175,7 +183,7 @@ namespace mutua::events {
             // signal that the slot at 'eventId' is available for dequeueing
             reservations[eventId] = false;
             if (eventId == queueTail) {
-                queueTail++;
+                MODINC(queueTail);
                 // unlock if someone was waiting on the empty queue
                 if (emptyGuard) {
                     mutex* guard = emptyGuard;
@@ -194,15 +202,16 @@ namespace mutua::events {
             // dequeue but don't release the slot yet
             dequeueGuard.lock();
             if (queueHead == queueTail) {
-                if (reservations[queueTail]) {
+                if (!reservations[queueTail]) {
                     // queue is empty -- wait until 'reentrantlyReportReservedEvent(...)' unlocks 'emptyGuard'
                     emptyGuard = &dequeueGuard;
                     goto EMPTY_QUEUE_RETRY;
                 } else {
-                    queueTail++;
+                    MODINC(queueTail);
                 }
             }
-            _QueueSlotsType eventId = queueHead++;
+            _QueueSlotsType eventId;
+            SETMODINC(eventId, queueHead);
             dequeueGuard.unlock();
 
             reservations[eventId] = true;
@@ -218,7 +227,7 @@ namespace mutua::events {
             // signal that the slot at 'eventId' is available for enqueue reservations
             reservations[eventId] = false;
             if (eventId == queueReservedHead) {
-                queueReservedHead++;
+                MODINC(queueReservedHead);
                 // unlock if someone was waiting on the full queue
                 if (fullGuard) {
                     mutex* guard = fullGuard;
@@ -257,7 +266,7 @@ namespace mutua::events {
 
         /** Intended to be used by event dispatchers, this method consumes the event using the answerless consumer function pointer.
          *  The queue slot may be immediately released for reused after all listeners get notified (see 'releaseEvent(...)') */
-        inline void consumeAnswerlessEvent(QueueElement* event, _QueueSlotsType eventId) {
+        inline void consumeAnswerlessEvent(QueueElement* event) {
 			answerlessConsumerProcedureReference(answerlessConsumerThis, event->eventParameter);
         }
 
@@ -265,11 +274,15 @@ namespace mutua::events {
          *  The queue slot may be released for reused (with 'releaseEvent(...)') after:
          *  1) all listeners get notified;
          *  2) the event producer got the 'answer is ready' notification, with 'waitForAnswer(...)' */
-        inline void consumeAnswerfullEvent(QueueElement* event, _QueueSlotsType eventId) {
+        inline void consumeAnswerfullEvent(QueueElement* event) {
 			answerfullConsumerProcedureReference(answerfullConsumerThis, event->eventParameter, event->answerObjectReference, event->answerMutex);
                 //reentrantlyReleaseSlot(eventId);  must only be released after the producer gets hold of 'answer'
         }
 
     };
 }
-#endif /* MUTUA_EVENTS_QUEUEDCLASSEVENTLINK_H_ */
+
+#undef MODINC
+#undef SETMODINC
+
+#endif /* MUTUA_EVENTS_QUEUEEVENTLINK_H_ */
