@@ -54,19 +54,19 @@ namespace mutua::events {
         int nListenerProcedureReferences;
 
         // mutexes
-        mutex  reservationGuard;
-        mutex* fullGuard;
-        mutex  enqueueGuard;
-        mutex  dequeueGuard;
-        mutex* emptyGuard;
+        mutex          reservationGuard;
+        atomic<mutex*> fullGuard;
+        mutex          queueGuard;
+        mutex          dequeueGuard;
+        atomic<mutex*> emptyGuard;
 
         // queue
         QueueElement events      [(size_t)std::numeric_limits<_QueueSlotsType>::max()+(size_t)1];  // an array sized like this allows implicit modulus operations on indexes of the same type (_QueueSlotsType)
-        bool         reservations[(size_t)std::numeric_limits<_QueueSlotsType>::max()+(size_t)1];  // keeps track of the conceded but not yet enqueued & conceded but not yet dequeued positions
-        unsigned int queueHead;          // will never be behind of 'queueReservedHead'
-        unsigned int queueTail;          // will never be  ahead of 'queueReservedTail'
-        unsigned int queueReservedHead;  // will never be  ahead of 'queueHead'
-        unsigned int queueReservedTail;  // will never be behind of 'queueTail'
+        atomic_bool  reservations[(size_t)std::numeric_limits<_QueueSlotsType>::max()+(size_t)1];  // keeps track of the conceded but not yet enqueued & conceded but not yet dequeued positions
+        atomic_uint  queueHead;          // will never be behind of 'queueReservedHead'
+        atomic_uint  queueTail;          // will never be  ahead of 'queueReservedTail'
+        atomic_uint  queueReservedHead;  // will never be  ahead of 'queueHead'
+        atomic_uint  queueReservedTail;  // will never be behind of 'queueTail'
 
 
         QueueEventLink(string eventName)
@@ -142,11 +142,18 @@ namespace mutua::events {
 
         FULL_QUEUE_RETRY:
             // reserve a queue slot
-            reservationGuard.lock();
+			queueGuard.lock();
+            //reservationGuard.lock();
             if (((queueReservedTail+1) & 0xFF) == queueReservedHead) {
                 if ( reservations[queueReservedHead] || (queueReservedHead == queueHead) ) {
                     // queue is full. Wait
-                    fullGuard = &reservationGuard;
+                	mutex* guard = fullGuard.exchange(&reservationGuard);
+					if (guard == nullptr) {
+						reservationGuard.lock();
+					}
+                	queueGuard.unlock();
+                    reservationGuard.lock();
+                    reservationGuard.unlock();
                     goto FULL_QUEUE_RETRY;
                     //reservationGuard.lock();
                 } else {
@@ -155,7 +162,7 @@ namespace mutua::events {
             }
             unsigned int eventId;
             SETMODINC(eventId, queueReservedTail);
-            reservationGuard.unlock();
+            //reservationGuard.unlock();
 //cerr << "rHead=" << (int)queueReservedHead << "; rTail=" << (int)queueReservedTail << "; ((queueReservedHead+1) & 0xFF)=" << ((queueReservedHead+1) & 0xFF) << "; reservations[queueReservedHead]=" << reservations[queueReservedHead] << "; eventId=" << eventId << endl << flush;
 
             // prepare the event slot and return the event id
@@ -167,6 +174,7 @@ namespace mutua::events {
             if (answerObjectReference != nullptr) {
                 futureEvent.answerMutex.try_lock();
             }
+            queueGuard.unlock();
             return eventId;
         }
 
@@ -180,14 +188,14 @@ namespace mutua::events {
         /** Signals that the slot at 'eventId' is available for consumption / notification.
          *  This method takes constant time -- a little bit longer if the queue is empty. */
         inline void reportReservedEvent(_QueueSlotsType eventId) {
+        	lock_guard<mutex> lock(queueGuard);
             // signal that the slot at 'eventId' is available for dequeueing
             reservations[eventId] = false;
             if (eventId == queueTail) {
                 MODINC(queueTail);
                 // unlock if someone was waiting on the empty queue
-                if (emptyGuard) {
-                    mutex* guard = emptyGuard;
-                    emptyGuard = nullptr;
+                mutex* guard = emptyGuard.exchange(nullptr);
+                if (guard) {
                     guard->unlock();
                 }
             }
@@ -200,11 +208,18 @@ namespace mutua::events {
             
         EMPTY_QUEUE_RETRY:
             // dequeue but don't release the slot yet
-            dequeueGuard.lock();
+			queueGuard.lock();
+//          dequeueGuard.lock();
             if (queueHead == queueTail) {
                 if ( reservations[queueTail] || (queueTail == queueReservedTail) ) {
                     // queue is empty -- wait until 'reentrantlyReportReservedEvent(...)' unlocks 'emptyGuard'
-                    emptyGuard = &dequeueGuard;
+                	mutex* guard = emptyGuard.exchange(&dequeueGuard);
+					if (guard == nullptr) {
+						dequeueGuard.lock();
+					}
+                	queueGuard.unlock();
+                    dequeueGuard.lock();
+                    dequeueGuard.unlock();
                     goto EMPTY_QUEUE_RETRY;
                 } else {
                     MODINC(queueTail);
@@ -212,10 +227,11 @@ namespace mutua::events {
             }
             _QueueSlotsType eventId;
             SETMODINC(eventId, queueHead);
-            dequeueGuard.unlock();
+//          dequeueGuard.unlock();
 
             reservations[eventId] = true;
             dequeuedElementPointer = &events[eventId];
+            queueGuard.unlock();
             return eventId;
         }
 
@@ -224,14 +240,14 @@ namespace mutua::events {
           * Answerfull events call it after notifications and after the event producer gets hold of the 'answer' object reference.
           * This method takes constant time -- a little longer when the queue is full. */
         inline void releaseEvent(_QueueSlotsType eventId) {
+        	lock_guard<mutex> lock(queueGuard);
             // signal that the slot at 'eventId' is available for enqueue reservations
             reservations[eventId] = false;
             if (eventId == queueReservedHead) {
                 MODINC(queueReservedHead);
                 // unlock if someone was waiting on the full queue
-                if (fullGuard) {
-                    mutex* guard = fullGuard;
-                    fullGuard = nullptr;
+            	mutex* guard = fullGuard.exchange(nullptr);
+                if (guard) {
                     guard->unlock();
                 }
             }

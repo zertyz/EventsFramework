@@ -969,8 +969,8 @@ struct QueueEventLinkSuiteObjects {
 	unsigned int answerlessConsumedEvents[65536];
 	inline void _answerlessEventConsumer(const unsigned int& n) {
     	answerlessConsumedEvents[n]++;
-//    	if (n%10 == 0) this_thread::sleep_for(chrono::milliseconds(1));
-//		cerr << n << ((n%26 == 0) ? ",\n" : ",") << flush;
+    	//if (n%10 == 0) this_thread::sleep_for(chrono::milliseconds(1));
+		//cerr << n << ((n%26 == 0) ? ",\n" : ",") << flush;
 	}
 	unsigned int notifyedEvents[65536];
 	inline void _eventListener1(const unsigned int& n) {
@@ -1151,7 +1151,7 @@ BOOST_AUTO_TEST_CASE(alternativelyBusyEventGeneration) {
 	HEAP_MARK();
 
 	mutua::events::QueueEventLink<unsigned int, unsigned int, 10, uint_fast8_t> myEvent("alternativelyBusyEventGeneration tests");
-	mutua::events::QueueEventDispatcher myDispatcher(myEvent, 1000);
+	mutua::events::QueueEventDispatcher myDispatcher(myEvent, 3);
 
 	myEvent.addListener          (&QueueEventLinkSuiteObjects::_eventListener1,          (QueueEventLinkSuiteObjects*)this);
 	myEvent.setAnswerlessConsumer(&QueueEventLinkSuiteObjects::_answerlessEventConsumer, (QueueEventLinkSuiteObjects*)this);
@@ -1165,23 +1165,24 @@ BOOST_AUTO_TEST_CASE(alternativelyBusyEventGeneration) {
 
 	unsigned int* reservedParameterReference;
 	unsigned int eventId;
-	for (int n=0; n<17; n++) {
+	for (int n=0; n<32; n++) {
 		for (int i=0; i<65536; i++) {
 			eventId = myEvent.reserveEventForReporting(reservedParameterReference);
+//			cerr << ">>" << eventId << flush;
 			*reservedParameterReference = i;
 			myEvent.reportReservedEvent(eventId);
-			//cerr << "Reported eventId " << eventId << " = " << i << endl << flush;
-			if (i%10 == 0) this_thread::sleep_for(chrono::milliseconds(1));
+//			cerr << " = " << i << endl << flush;
+			//if (i%10 == 0) this_thread::sleep_for(chrono::milliseconds(1));
 			//this_thread::sleep_for(chrono::milliseconds(16));
 		}
 	}
 
-	this_thread::sleep_for(chrono::milliseconds(1000));
+	this_thread::sleep_for(chrono::milliseconds(500));
 	myDispatcher.stopASAP();
 
-	checkAllElements(answerlessConsumedEvents, notifyedEvents, 17);
-	BOOST_TEST(answerlessConsumedEvents[1] == 17);
-	BOOST_TEST(          notifyedEvents[1] == 17);
+	checkAllElements(answerlessConsumedEvents, notifyedEvents, 32);
+	BOOST_TEST(answerlessConsumedEvents[1] == 32);
+	BOOST_TEST(          notifyedEvents[1] == 32);
 
 	HEAP_TRACE("alternativelyBusyEventGeneration", output);
 }

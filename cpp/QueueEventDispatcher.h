@@ -63,7 +63,7 @@ namespace mutua::events {
 			decltype(_QueueEventLink::queueHead)    eventId;
 			while (isActive) {
 				eventId = el.reserveEventForDispatching(dequeuedEvent);
-				if (threadId % 333 == 0) {
+				if (threadId == 5826) {
 					cerr << "thread #" << threadId << " got '" << dequeuedEvent->eventParameter << "'\n" << flush;
 				}
 				el.consumeAnswerlessEvent(dequeuedEvent);
@@ -73,8 +73,24 @@ namespace mutua::events {
 		}
 
 		void debug() {
+			bool isReservationGuardLocked;
+			bool isFullGuardNotNull;
+			bool isQueueGuardLocked;
+			bool isDequeueGuardLocked;
+			bool isEmptyGuardNotNull;
 			while (isActive) {
-				cerr << "\nrHead=" << el.queueReservedHead << "; rTail=" << el.queueReservedTail << "; ((queueReservedHead+1) & 0xFF)=" << ((el.queueReservedTail+1) & 0xFF) << "; reservations[queueReservedHead]=" << el.reservations[el.queueReservedHead] << endl << flush;
+
+				isReservationGuardLocked = !el.reservationGuard.try_lock();
+				isFullGuardNotNull       = el.fullGuard != nullptr;
+				isQueueGuardLocked       = !el.queueGuard.try_lock();
+				isDequeueGuardLocked     = !el.dequeueGuard.try_lock();
+				isEmptyGuardNotNull      = el.emptyGuard != nullptr;
+
+				if (!isReservationGuardLocked) el.reservationGuard.unlock();
+				if (!isQueueGuardLocked)       el.queueGuard.unlock();
+				if (!isDequeueGuardLocked)     el.dequeueGuard.unlock();
+
+				cerr << "\nrHead=" << el.queueReservedHead << "; rTail=" << el.queueReservedTail << "; ((queueReservedTail+1) & 0xFF)=" << ((el.queueReservedTail+1) & 0xFF) << "; reservations[queueReservedHead]=" << el.reservations[el.queueReservedHead] << "; isReservationGuardLocked=" << isReservationGuardLocked << "; isFullGuardNotNull=" << isFullGuardNotNull << "; isQueueGuardLocked=" << isQueueGuardLocked << "; isDequeueGuardLocked=" << isDequeueGuardLocked << "; isEmptyGuardNotNull=" << isEmptyGuardNotNull << endl << flush;
 				this_thread::sleep_for(chrono::milliseconds(1000));
 			}
 		}
