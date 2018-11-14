@@ -1151,7 +1151,7 @@ BOOST_AUTO_TEST_CASE(alternativelyBusyEventGeneration) {
 	HEAP_MARK();
 
 	mutua::events::QueueEventLink<unsigned int, unsigned int, 10, 8> myEvent("alternativelyBusyEventGeneration tests");
-	mutua::events::QueueEventDispatcher myDispatcher(myEvent, 1);
+	mutua::events::QueueEventDispatcher myDispatcher(myEvent, 3);
 
 	myEvent.addListener          (&QueueEventLinkSuiteObjects::_eventListener1,          (QueueEventLinkSuiteObjects*)this);
 	myEvent.setAnswerlessConsumer(&QueueEventLinkSuiteObjects::_answerlessEventConsumer, (QueueEventLinkSuiteObjects*)this);
@@ -1166,7 +1166,7 @@ BOOST_AUTO_TEST_CASE(alternativelyBusyEventGeneration) {
 	unsigned int* reservedParameterReference;
 	unsigned int eventId;
 	for (int n=0; n<64; n++) {
-		for (int i=0; i<65536; i++) {
+		for (unsigned int i=0; i<65536; i++) {
 			eventId = myEvent.reserveEventForReporting(reservedParameterReference);
 //			cerr << ">>" << eventId << flush;
 			*reservedParameterReference = i;

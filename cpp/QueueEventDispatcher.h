@@ -60,7 +60,7 @@ namespace mutua::events {
 
 		void dispatchAnswerlessEventsLoop(int threadId) {
 			typename _QueueEventLink::QueueElement* dequeuedEvent;
-			decltype(_QueueEventLink::queueHead)    eventId;
+			unsigned int                            eventId;
 			while (isActive) {
 				eventId = el.reserveEventForDispatching(dequeuedEvent);
 //				if (threadId == 5826) {
