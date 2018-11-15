@@ -29,7 +29,11 @@ namespace mutua::events {
 		int               nThreads;
 		thread*           threads;
 
-		QueueEventDispatcher(_QueueEventLink& el, int nThreads)
+		QueueEventDispatcher(_QueueEventLink& el,
+		                     int              nThreads,
+							 bool             notifyEvents,
+							 bool             consumeAnswerlessEvents,
+							 bool             consumeAnswerfullEvents)
 				: isActive(true)
 				, el(el)
 				, nThreads(nThreads/*+1*/) {
