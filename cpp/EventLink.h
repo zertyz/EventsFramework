@@ -39,12 +39,14 @@ namespace mutua::events {
 
         // api
         /*
-        setAnswerlessConsumer()
-        setAnswerfullConsumer()
-        unsetConsumer()
-        addListener()
-        removeListener()
+        setAnswerlessConsumer(idem abaixo)
+        setAnswerfullConsumer(idem abaixo)
+        unsetConsumer() -- chama o destructorLambda, se foi fornecido
+        addListener(methodPtr, instantiatorLambda, destructorLambda)
+        addListener(methodPtr, methodPtrThis)
+        removeListener() -- chama o destructor lambda se foi fornecido
 
+        // zero copy queue API
         reserveEventForReporting()
         reportReservedEvent()
         reserveEventForDispatching()
@@ -54,7 +56,18 @@ namespace mutua::events {
 		consumeAnswerlessEvent()
 		consumeAnswerfullEvent()
 
+        // zero-copy queue API
         releaseEvent()
+
+        // non-zero-copy queue API
+        enqueueEvent()  -- consulta o head e move o tail (mutex somente ao bloquear, 1 única thread enfileirando)
+        dequeueEvent()  -- consulta o tail e move o heaf (mutex somente ao bloquear, 1 única thread desenfileirando, que pode não ser a mesma que enfilera)
+
+        // object pool instantiation/deinstantiation
+        constructMethodObject(constructorLambda) -- executa, obtendo a instância no retorno -- o argumento é o número da instância
+        destructMethodObject(destructorLambda)   -- executa, passando a instancia como argumento
+
+        estes métodos são chamados pelo 'EventDispatcher' e/ou removeListener / unsetConsumer -- se é que unsetConsumer faz sentido.
 */
 	};
 

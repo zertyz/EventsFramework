@@ -6,7 +6,8 @@
 #include <initializer_list>
 using namespace std;
 
-//using namespace mutua::cpputils;
+#include <BetterExceptions.h>
+using namespace mutua::cpputils;
 
 
 namespace mutua::events {
@@ -31,17 +32,36 @@ namespace mutua::events {
 
 		QueueEventDispatcher(_QueueEventLink& el,
 		                     int              nThreads,
+		                     int              threadsPriority,
+		                     // TODO consumers 'this' instances and
+		                     // TODO listeners 'this' instances should be set on the event link?
+		                     // TODO or they must receive a generator of new instances?
+							 bool             zeroCopy,
 							 bool             notifyEvents,
 							 bool             consumeAnswerlessEvents,
 							 bool             consumeAnswerfullEvents)
 				: isActive(true)
 				, el(el)
 				, nThreads(nThreads/*+1*/) {
+
+			if (threadsPriority != 0) {
+                THROW_EXCEPTION(not_implemented_error, "Attempting to create a dispatcher for event '"+el.eventName+"' with custom 'threadsPriority', " +
+                                                       "and this is not implemented yet -- it must be zero in the meantime.");
+			}
+
 			threads = new thread[nThreads/*+1*/];
+
 			for (int i=0; i<nThreads; i++) {
-//cerr << "creating consumer thread #" << i << endl << flush;
-				threads[i] = thread(&QueueEventDispatcher::dispatchAnswerlessEventsLoop, this, i);
-//this_thread::sleep_for(chrono::milliseconds(300));
+				/**/ if (zeroCopy && notifyEvents &&  consumeAnswerlessEvents && !consumeAnswerfullEvents)
+					threads[i] = thread(&QueueEventDispatcher::dispatchZeroCopyListeneableAndConsumableAnswerlessEventsLoop, this, i);
+				else if (zeroCopy && notifyEvents && !consumeAnswerlessEvents &&  consumeAnswerfullEvents)
+					threads[i] = thread(&QueueEventDispatcher::dispatchZeroCopyListeneableAndConsumableAnswerlessEventsLoop, this, i);
+				else
+	                THROW_EXCEPTION(not_implemented_error, "Attempting to create a dispatcher for event '"+el.eventName+"' with a not implemented combination of " +
+	                                                       "'zeroCopy' (" +                to_string(zeroCopy)+"), " +
+	                                                       "'notifyEvents' (" +            to_string(notifyEvents)+"), " +
+	                                                       "'consumeAnswerlessEvents' (" + to_string(consumeAnswerlessEvents)+") and " +
+	                                                       "'consumeAnswerfullEvents' (" + to_string(consumeAnswerfullEvents)+")");
 			}
 			/*threads[nThreads] = thread(&QueueEventDispatcher::debug, this);*/
 		}
@@ -62,19 +82,30 @@ namespace mutua::events {
 			}
 		}
 
-		void dispatchAnswerlessEventsLoop(int threadId) {
+		// if (zeroCopy && notifyEvents &&  consumeAnswerlessEvents && !consumeAnswerfullEvents)
+		void dispatchZeroCopyListeneableAndConsumableAnswerlessEventsLoop(int threadId) {
 			typename _QueueEventLink::QueueElement* dequeuedEvent;
 			unsigned int                            eventId;
 			while (isActive) {
 				eventId = el.reserveEventForDispatching(dequeuedEvent);
-//				if (threadId == 5826) {
-//					cerr << "thread #" << threadId << " got '" << dequeuedEvent->eventParameter << "'\n" << flush;
-//				}
 				el.consumeAnswerlessEvent(dequeuedEvent);
 				el.notifyEventListeners(dequeuedEvent->eventParameter);
 				el.releaseEvent(eventId);
 			}
 		}
+
+		// if (zeroCopy && notifyEvents && !consumeAnswerlessEvents &&  consumeAnswerfullEvents)
+		void dispatchZeroCopyListeneableAndConsumableAnswerfullEventsLoop() {
+			typename _QueueEventLink::AnswerfullEvent* dequeuedEvent;
+			while (isActive) {
+				el.reserveEventForDispatching(dequeuedEvent);
+				el.consumeAnswerfullEvent(dequeuedEvent);
+				el.notifyEventListeners(dequeuedEvent->eventParameter);
+				// TODO consultar regras para liberar evento com resposta
+				// el.releaseEvent(dequeuedEvent);
+			}
+		}
+
 
 		void debug() {
 			bool isReservationGuardLocked;
@@ -98,17 +129,6 @@ namespace mutua::events {
 				this_thread::sleep_for(chrono::milliseconds(1000));
 			}
 		}
-
-		void dispatchAnswerfullEventsLoop() {
-//			typename _QueueEventLink::AnswerfullEvent* dequeuedEvent;
-//			while (isActive) {
-//				el.reserveEventForDispatching(dequeuedEvent);
-//				el.consumeAnswerfullEvent(dequeuedEvent);
-//				el.notifyEventListeners(dequeuedEvent->eventParameter);
-//				el.releaseEvent(dequeuedEvent);
-//			}
-		}
-
 	};
 
 
