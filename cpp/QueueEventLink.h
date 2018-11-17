@@ -101,6 +101,7 @@ namespace mutua::events {
         	answerfullConsumerThis = nullptr;
         }
 
+        /** Adds a listener to operate on a single instance, regardless of the number of dispatcher threads */
         template <typename _Class> void addListener(void (_Class::*listenerProcedureReference) (const _ArgumentType&), _Class* listenerThis) {
             if (nListenerProcedureReferences >= _NListeners) {
                 THROW_EXCEPTION(overflow_error, "Out of listener slots (max="+to_string(_NListeners)+") while attempting to add a new event listener to '" + eventName + "' " +
@@ -108,6 +109,21 @@ namespace mutua::events {
             }
             listenerProcedureReferences[nListenerProcedureReferences] = reinterpret_cast<void (*) (void*, const _ArgumentType&)>(listenerProcedureReference);
                           listenersThis[nListenerProcedureReferences] = listenerThis;
+                  listenersConstructors[nListenerProcedureReferences] = nullptr;
+                   listenersDestructors[nListenerProcedureReferences] = nullptr;
+            nListenerProcedureReferences++;
+        }
+
+        /** Adds a listener to operate on instances created on demand, by calling the _Class' default constructor & destructor */
+        template <typename _Class> void addListener(void (_Class::*listenerProcedureReference) (const _ArgumentType&)) {
+            if (nListenerProcedureReferences >= _NListeners) {
+                THROW_EXCEPTION(overflow_error, "Out of listener slots (max="+to_string(_NListeners)+") while attempting to add a new event listener to '" + eventName + "' " +
+                                                "(you may wish to increase '_NListeners' at '" + eventName + "'s declaration)");
+            }
+            listenerProcedureReferences[nListenerProcedureReferences] = reinterpret_cast<void (*) (void*, const _ArgumentType&)>(listenerProcedureReference);
+                          listenersThis[nListenerProcedureReferences] = nullptr;
+                  listenersConstructors[nListenerProcedureReferences] = &_Class::ctor;
+                   listenersDestructors[nListenerProcedureReferences] = &_Class::dtor;
             nListenerProcedureReferences++;
         }
 
@@ -127,9 +143,13 @@ namespace mutua::events {
             }
             memcpy(&(listenerProcedureReferences[pos]), &(listenerProcedureReferences[pos+1]), (nListenerProcedureReferences - (pos+1)) * sizeof(listenerProcedureReferences[0]));
             memcpy(              &(listenersThis[pos]),               &(listenersThis[pos+1]), (nListenerProcedureReferences - (pos+1)) * sizeof(listenersThis[0]));
+            memcpy(      &(listenersConstructors[pos]),       &(listenersConstructors[pos+1]), (nListenerProcedureReferences - (pos+1)) * sizeof(listenersConstructors[0]));
+            memcpy(       &(listenersDestructors[pos]),        &(listenersDestructors[pos+1]), (nListenerProcedureReferences - (pos+1)) * sizeof(listenersDestructors[0]));
             nListenerProcedureReferences--;
             listenerProcedureReferences[nListenerProcedureReferences] = nullptr;
                           listenersThis[nListenerProcedureReferences] = nullptr;
+                  listenersConstructors[nListenerProcedureReferences] = nullptr;
+                   listenersDestructors[nListenerProcedureReferences] = nullptr;
             return true;
         }
 

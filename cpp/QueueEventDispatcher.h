@@ -52,10 +52,12 @@ namespace mutua::events {
 			threads = new thread[nThreads/*+1*/];
 
 			for (int i=0; i<nThreads; i++) {
-				/**/ if (zeroCopy && notifyEvents &&  consumeAnswerlessEvents && !consumeAnswerfullEvents)
+				/**/ if ( zeroCopy &&  notifyEvents &&  consumeAnswerlessEvents && !consumeAnswerfullEvents)
 					threads[i] = thread(&QueueEventDispatcher::dispatchZeroCopyListeneableAndConsumableAnswerlessEventsLoop, this, i);
-				else if (zeroCopy && notifyEvents && !consumeAnswerlessEvents &&  consumeAnswerfullEvents)
-					threads[i] = thread(&QueueEventDispatcher::dispatchZeroCopyListeneableAndConsumableAnswerlessEventsLoop, this, i);
+				else if ( zeroCopy &&  notifyEvents && !consumeAnswerlessEvents &&  consumeAnswerfullEvents)
+					threads[i] = thread(&QueueEventDispatcher::dispatchZeroCopyListeneableAndConsumableAnswerfullEventsLoop, this, i);
+				else if ( zeroCopy && !notifyEvents &&  consumeAnswerlessEvents && !consumeAnswerfullEvents)
+					threads[i] = thread(&QueueEventDispatcher::dispatchZeroCopyConsumableAnswerlessEventsLoop, this, i);
 				else
 	                THROW_EXCEPTION(not_implemented_error, "Attempting to create a dispatcher for event '"+el.eventName+"' with a not implemented combination of " +
 	                                                       "'zeroCopy' (" +                to_string(zeroCopy)+"), " +
@@ -88,23 +90,51 @@ namespace mutua::events {
 			unsigned int                            eventId;
 			while (isActive) {
 				eventId = el.reserveEventForDispatching(dequeuedEvent);
-				el.consumeAnswerlessEvent(dequeuedEvent);
-				el.notifyEventListeners(dequeuedEvent->eventParameter);
+				// consume
+				try {
+					el.answerlessConsumerProcedureReference(el.answerlessConsumerThis, dequeuedEvent->eventParameter);
+				} catch () {
+					DUMP_EXCEPTION(runtime_error, e, "QueueEventDispatcher for event '"+el.eventName+"', thread #"+to_string(threadId)+": exception in answerless consumer " +
+						                             "with parameter: "+eventParameterSerializer(dequeuedEvent->eventParameter)+". Event consumption will not be retryed, " +
+						                             "since a fallback queue is not yet implemented.");
+				}
+				// notify
+				for (unsigned int i=0; i<el.nListenerProcedureReferences; i++) try {
+					el.listenerProcedureReferences[i](el.listenersThis[i], dequeuedEvent->eventParameter);
+				} catch () {
+					DUMP_EXCEPTION(runtime_error, e, "QueueEventDispatcher for event '"+el.eventName+"', thread #"+to_string(threadId)+": exception in event listener #"+to_string(i)+
+						                             "with parameter: "+eventParameterSerializer(dequeuedEvent->eventParameter)+".");
+				}
+
+				try {
+					el.notifyEventListeners(dequeuedEvent->eventParameter);
+				} catch () {
+					DUMP_EXCEPTION(runtime_error, e, "QueueEventDispatcher for event '"+el.eventName+"', thread #"+to_string(threadId)+": exception in event listener " +
+						                             "with parameter: "+eventParameterSerializer(dequeuedEvent->eventParameter)+". Event consumption will not be retryed, " +
+						                             "since a fallback queue is not yet implemented.");
+				}
 				el.releaseEvent(eventId);
 			}
 		}
 
 		// if (zeroCopy && notifyEvents && !consumeAnswerlessEvents &&  consumeAnswerfullEvents)
-		void dispatchZeroCopyListeneableAndConsumableAnswerfullEventsLoop() {
+		void dispatchZeroCopyListeneableAndConsumableAnswerfullEventsLoop(int threadId) {
 			typename _QueueEventLink::AnswerfullEvent* dequeuedEvent;
+			unsigned int                               eventId;
 			while (isActive) {
-				el.reserveEventForDispatching(dequeuedEvent);
+				eventId = el.reserveEventForDispatching(dequeuedEvent);
 				el.consumeAnswerfullEvent(dequeuedEvent);
 				el.notifyEventListeners(dequeuedEvent->eventParameter);
 				// TODO consultar regras para liberar evento com resposta
-				// el.releaseEvent(dequeuedEvent);
+				// el.releaseEvent(eventId);
 			}
 		}
+
+		// if ( zeroCopy && !notifyEvents &&  consumeAnswerlessEvents && !consumeAnswerfullEvents)
+		void dispatchZeroCopyConsumableAnswerlessEventsLoop(int threadId) {
+
+		}
+
 
 
 		void debug() {
