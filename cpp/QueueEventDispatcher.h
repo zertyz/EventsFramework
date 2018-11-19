@@ -33,9 +33,6 @@ namespace mutua::events {
 		QueueEventDispatcher(_QueueEventLink& el,
 		                     int              nThreads,
 		                     int              threadsPriority,
-		                     // TODO consumers 'this' instances and
-		                     // TODO listeners 'this' instances should be set on the event link?
-		                     // TODO or they must receive a generator of new instances?
 							 bool             zeroCopy,
 							 bool             notifyEvents,
 							 bool             consumeAnswerlessEvents,
@@ -44,22 +41,37 @@ namespace mutua::events {
 				, el(el)
 				, nThreads(nThreads/*+1*/) {
 
+			// checks
 			if (threadsPriority != 0) {
-                THROW_EXCEPTION(not_implemented_error, "Attempting to create a dispatcher for event '"+el.eventName+"' with custom 'threadsPriority', " +
-                                                       "and this is not implemented yet -- it must be zero in the meantime.");
+                THROW_EXCEPTION(not_implemented_error, "QueueEventDispatcher: Attempting to create a dispatcher for event '"+el.eventName+"' with custom " +
+                                                       "'threadsPriority', and this is not implemented yet -- it must be zero in the meantime.");
+			}
+			if ( consumeAnswerlessEvents && (nThreads > el.nAnswerlessConsumerThese) ) {
+				THROW_EXCEPTION(runtime_error, "QueueEventDispatcher: Attempting to create a dispatcher for event '"+el.eventName+"' with "+to_string(nThreads)+" threads, " +
+                                               "but the given QueueEventLink is set to have only "+to_string(el.nAnswerlessConsumerThese)+" consumer objects on the instance pool " +
+                                               "and this combination is not optimal. Please, arranje that -- most probably by increasing the array of objects given to 'setAnswerlessConsumer(...)'");
+			}
+			if ( consumeAnswerfullEvents && (nThreads > el.nAnswerfullConsumerThese) ) {
+				THROW_EXCEPTION(runtime_error, "QueueEventDispatcher: Attempting to create a dispatcher for event '"+el.eventName+"' with "+to_string(nThreads)+" threads, " +
+                                               "but the given QueueEventLink is set to have only "+to_string(el.nAnswerfullConsumerThese)+" consumer objects on the instance pool " +
+                                               "and this combination is not optimal. Please, arranje that -- most probably by increasing the array of objects given to 'setAnswerfullConsumer(...)'");
 			}
 
 			threads = new thread[nThreads/*+1*/];
 
 			for (int i=0; i<nThreads; i++) {
-				/**/ if ( zeroCopy &&  notifyEvents &&  consumeAnswerlessEvents && !consumeAnswerfullEvents)
-					threads[i] = thread(&QueueEventDispatcher::dispatchZeroCopyListeneableAndConsumableAnswerlessEventsLoop, this, i);
-				else if ( zeroCopy &&  notifyEvents && !consumeAnswerlessEvents &&  consumeAnswerfullEvents)
+				/**/ if ( zeroCopy &&  notifyEvents &&  consumeAnswerlessEvents && !consumeAnswerfullEvents )
+					threads[i] = thread(&QueueEventDispatcher::dispatchZeroCopyListeneableAndConsumableAnswerlessEventsLoop, this, i, el.answerlessConsumerThese[i%el.nAnswerlessConsumerThese]);
+				else if ( zeroCopy &&  notifyEvents && !consumeAnswerlessEvents &&  consumeAnswerfullEvents )
 					threads[i] = thread(&QueueEventDispatcher::dispatchZeroCopyListeneableAndConsumableAnswerfullEventsLoop, this, i);
-				else if ( zeroCopy && !notifyEvents &&  consumeAnswerlessEvents && !consumeAnswerfullEvents)
-					threads[i] = thread(&QueueEventDispatcher::dispatchZeroCopyConsumableAnswerlessEventsLoop, this, i);
+				else if ( zeroCopy && !notifyEvents &&  consumeAnswerlessEvents && !consumeAnswerfullEvents )
+					threads[i] = thread(&QueueEventDispatcher::dispatchZeroCopyConsumableAnswerlessEventsLoop,               this, i);
+				else if ( zeroCopy && !notifyEvents && !consumeAnswerlessEvents &&  consumeAnswerfullEvents )
+					threads[i] = thread(&QueueEventDispatcher::dispatchZeroCopyConsumableAnswerfullEventsLoop,               this, i);
+				else if ( zeroCopy &&  notifyEvents && !consumeAnswerlessEvents && !consumeAnswerfullEvents )
+					threads[i] = thread(&QueueEventDispatcher::dispatchZeroCopyListeneableEventsLoop,                        this, i);
 				else
-	                THROW_EXCEPTION(not_implemented_error, "Attempting to create a dispatcher for event '"+el.eventName+"' with a not implemented combination of " +
+	                THROW_EXCEPTION(not_implemented_error, "QueueEventDispatcher: Attempting to create a dispatcher for event '"+el.eventName+"' with a not implemented combination of " +
 	                                                       "'zeroCopy' (" +                to_string(zeroCopy)+"), " +
 	                                                       "'notifyEvents' (" +            to_string(notifyEvents)+"), " +
 	                                                       "'consumeAnswerlessEvents' (" + to_string(consumeAnswerlessEvents)+") and " +
@@ -74,67 +86,111 @@ namespace mutua::events {
 		}
 
 		void stopASAP() {
-			std::cerr << "Tentando parar..." << std::endl << std::flush;
 			if (isActive) {
 				for (int i=0; i<nThreads; i++) {
-					std::cerr << "detaching thread #" << i << std::endl << std::flush;
 					threads[i].detach();
 				}
 				isActive = false;
 			}
 		}
 
+		inline void consumeAnswerlessEvent(
+				unsigned int        threadId,
+				void                (*consumerMethod) (void*, const _ArgumentType&),
+				void*                consumerThis,
+				const _ArgumentType& eventParameter) {
+			try {
+				consumerMethod(consumerThis, eventParameter);
+			} catch () {
+				DUMP_EXCEPTION(runtime_error, e, "QueueEventDispatcher for event '"+el.eventName+"', thread #"+to_string(threadId)+": exception in answerless consumer " +
+					                             "with parameter: "+eventParameterSerializer(eventParameter)+". Event consumption will not be retryed, " +
+					                             "since a fallback queue is not yet implemented.");
+			}
+		}
+
+		inline void consumeAnswerfullEvent(
+				unsigned int                               threadId,
+				void                                     (*consumerMethod) (void*, const _ArgumentType&, _AnswerType*, std::mutex&),
+				void*                                      consumerThis,
+				typename _QueueEventLink::AnswerfullEvent* dequeuedEvent) {
+			try {
+				consumerMethod(consumerThis, dequeuedEvent->eventParameter, dequeuedEvent->answerObjectReference, dequeuedEvent->answerMutex);
+			} catch () {
+				DUMP_EXCEPTION(runtime_error, e, "QueueEventDispatcher for event '"+el.eventName+"', thread #"+to_string(threadId)+": exception in answerfull consumer " +
+					                             "with parameter: "+eventParameterSerializer(dequeuedEvent->eventParameter)+". Event consumption will not be retryed, " +
+					                             "since a fallback queue is not yet implemented.");
+			}
+		}
+
+		inline void notifyEventObservers(
+				unsigned int         threadId,
+				void              (**listenerMethods) (void*, const _ArgumentType&),
+				void*               *listenersThis,
+				const _ArgumentType& eventParameter) {
+			for (unsigned int i=0; i<el.nListenerProcedureReferences; i++) try {
+				listenerMethods[i](listenersThis[i], eventParameter);
+			} catch () {
+				DUMP_EXCEPTION(runtime_error, e, "QueueEventDispatcher for event '"+el.eventName+"', thread #"+to_string(threadId)+": exception in event listener #"+to_string(i)+
+					                             "with parameter: "+eventParameterSerializer(eventParameter)+".");
+			}
+		}
+
 		// if (zeroCopy && notifyEvents &&  consumeAnswerlessEvents && !consumeAnswerfullEvents)
-		void dispatchZeroCopyListeneableAndConsumableAnswerlessEventsLoop(int threadId) {
+		void dispatchZeroCopyListeneableAndConsumableAnswerlessEventsLoop(int threadId, void* consumerThis) {
 			typename _QueueEventLink::QueueElement* dequeuedEvent;
 			unsigned int                            eventId;
 			while (isActive) {
 				eventId = el.reserveEventForDispatching(dequeuedEvent);
-				// consume
-				try {
-					el.answerlessConsumerProcedureReference(el.answerlessConsumerThis, dequeuedEvent->eventParameter);
-				} catch () {
-					DUMP_EXCEPTION(runtime_error, e, "QueueEventDispatcher for event '"+el.eventName+"', thread #"+to_string(threadId)+": exception in answerless consumer " +
-						                             "with parameter: "+eventParameterSerializer(dequeuedEvent->eventParameter)+". Event consumption will not be retryed, " +
-						                             "since a fallback queue is not yet implemented.");
-				}
-				// notify
-				for (unsigned int i=0; i<el.nListenerProcedureReferences; i++) try {
-					el.listenerProcedureReferences[i](el.listenersThis[i], dequeuedEvent->eventParameter);
-				} catch () {
-					DUMP_EXCEPTION(runtime_error, e, "QueueEventDispatcher for event '"+el.eventName+"', thread #"+to_string(threadId)+": exception in event listener #"+to_string(i)+
-						                             "with parameter: "+eventParameterSerializer(dequeuedEvent->eventParameter)+".");
-				}
-
-				try {
-					el.notifyEventListeners(dequeuedEvent->eventParameter);
-				} catch () {
-					DUMP_EXCEPTION(runtime_error, e, "QueueEventDispatcher for event '"+el.eventName+"', thread #"+to_string(threadId)+": exception in event listener " +
-						                             "with parameter: "+eventParameterSerializer(dequeuedEvent->eventParameter)+". Event consumption will not be retryed, " +
-						                             "since a fallback queue is not yet implemented.");
-				}
+				consumeAnswerlessEvent(threadId, el.answerlessConsumerProcedureReference, consumerThis,     dequeuedEvent->eventParameter);
+				notifyEventObservers  (threadId, el.listenerProcedureReferences,          el.listenersThis, dequeuedEvent->eventParameter);
 				el.releaseEvent(eventId);
 			}
 		}
 
 		// if (zeroCopy && notifyEvents && !consumeAnswerlessEvents &&  consumeAnswerfullEvents)
-		void dispatchZeroCopyListeneableAndConsumableAnswerfullEventsLoop(int threadId) {
-			typename _QueueEventLink::AnswerfullEvent* dequeuedEvent;
-			unsigned int                               eventId;
+		void dispatchZeroCopyListeneableAndConsumableAnswerfullEventsLoop(int threadId, void* consumerThis) {
+			typename _QueueEventLink::QueueElement* dequeuedEvent;
+			unsigned int                            eventId;
 			while (isActive) {
 				eventId = el.reserveEventForDispatching(dequeuedEvent);
-				el.consumeAnswerfullEvent(dequeuedEvent);
-				el.notifyEventListeners(dequeuedEvent->eventParameter);
-				// TODO consultar regras para liberar evento com resposta
-				// el.releaseEvent(eventId);
+				consumeAnswerfullEvent(threadId, el.answerfullConsumerProcedureReference, consumerThis,     dequeuedEvent);
+				notifyEventObservers  (threadId, el.listenerProcedureReferences,          el.listenersThis, dequeuedEvent->eventParameter);
+				el.releaseEvent(eventId);
 			}
 		}
 
 		// if ( zeroCopy && !notifyEvents &&  consumeAnswerlessEvents && !consumeAnswerfullEvents)
-		void dispatchZeroCopyConsumableAnswerlessEventsLoop(int threadId) {
-
+		void dispatchZeroCopyConsumableAnswerlessEventsLoop(int threadId, void* consumerThis) {
+			typename _QueueEventLink::QueueElement* dequeuedEvent;
+			unsigned int                            eventId;
+			while (isActive) {
+				eventId = el.reserveEventForDispatching(dequeuedEvent);
+				consumeAnswerlessEvent(threadId, el.answerlessConsumerProcedureReference, consumerThis, dequeuedEvent->eventParameter);
+				el.releaseEvent(eventId);
+			}
 		}
 
+		// if ( zeroCopy && !notifyEvents && !consumeAnswerlessEvents &&  consumeAnswerfullEvents )
+		void dispatchZeroCopyConsumableAnswerfullEventsLoop(int threadId, void* consumerThis) {
+			typename _QueueEventLink::QueueElement* dequeuedEvent;
+			unsigned int                            eventId;
+			while (isActive) {
+				eventId = el.reserveEventForDispatching(dequeuedEvent);
+				consumeAnswerfullEvent(threadId, el.answerfullConsumerProcedureReference, consumerThis, dequeuedEvent);
+				el.releaseEvent(eventId);
+			}
+		}
+
+		// if ( zeroCopy &&  notifyEvents && !consumeAnswerlessEvents && !consumeAnswerfullEvents )
+		void dispatchZeroCopyListeneableEventsLoop(int threadId) {
+			typename _QueueEventLink::QueueElement* dequeuedEvent;
+			unsigned int                            eventId;
+			while (isActive) {
+				eventId = el.reserveEventForDispatching(dequeuedEvent);
+				notifyEventObservers(threadId, el.listenerProcedureReferences, el.listenersThis, dequeuedEvent->eventParameter);
+				el.releaseEvent(eventId);
+			}
+		}
 
 
 		void debug() {

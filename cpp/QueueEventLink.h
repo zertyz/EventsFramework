@@ -20,7 +20,7 @@ namespace mutua::events {
      * Queue based communications between event producers/consumers & notifyers/observers.
      *
     */
-    template <typename _AnswerType, typename _ArgumentType, int _NListeners, int _NConsumersThisPool, uint_fast8_t _Log2_QueueSlots>
+    template <typename _AnswerType, typename _ArgumentType, int _NListeners, uint_fast8_t _Log2_QueueSlots>
     class QueueEventLink {
 
     public:
@@ -41,16 +41,12 @@ namespace mutua::events {
         };
 
         // consumers
-        void                     (*answerlessConsumerProcedureReference) (void*, const _ArgumentType&);
-        std::function<void*()>     answerlessConsumerInstantiator;               // reference to the default constructor or lambda to create a new instance of 'answerlessConsumerProcedureReference's class
-        void*                      answerlessConsumerThese[_NConsumersThisPool]; // pointers to instances (this) of the class on which the method 'answerlessConsumerProcedureReference' will act on
-        std::function<void(void*)> answerlessConsumerDeinstantiator;             // reference to destructor or lambda to free an instance of 'answerlessConsumerProcedureReference's class
-        unsigned int               nAnswerlessConsumerThese;
-        void                     (*answerfullConsumerProcedureReference) (void*, const _ArgumentType&, _AnswerType*, std::mutex&);
-        std::function<void*()>     answerfullConsumerInstantiator;               // reference to the default constructor or lambda to create a new instance of 'answerfullConsumerProcedureReference's class
-        void*                      answerfullConsumerThese[_NConsumersThisPool]; // pointers to instances (this) of the class on which the method 'answerfullConsumerProcedureReference' will act on
-        std::function<void(void*)> answerfullConsumerDeinstantiator;             // reference to destructor or lambda to free an instance of 'answerfullConsumerProcedureReference's class
-        unsigned int               nAnswerfullConsumerThese;
+        void       (*answerlessConsumerProcedureReference) (void*, const _ArgumentType&);
+        void*       *answerlessConsumerThese;   // pointers to instances (this) of the class on which the method 'answerlessConsumerProcedureReference' will act on
+        unsigned int nAnswerlessConsumerThese;
+        void       (*answerfullConsumerProcedureReference) (void*, const _ArgumentType&, _AnswerType*, std::mutex&);
+        void*       *answerfullConsumerThese;   // pointers to instances (this) of the class on which the method 'answerfullConsumerProcedureReference' will act on
+        unsigned int nAnswerfullConsumerThese;
 
         // listeners
         void       (*listenerProcedureReferences[_NListeners]) (void*, const _ArgumentType&);
@@ -91,24 +87,24 @@ namespace mutua::events {
 			unsetConsumer();
 		}
 
-        template <typename _Class> void setAnswerlessConsumer(void (_Class::*consumerProcedureReference) (const _ArgumentType&), _Class* consumerThis) {
+        template <typename _Class> void setAnswerlessConsumer(void (_Class::*consumerProcedureReference) (const _ArgumentType&), _Class* &consumerThese, unsigned int nConsumerThese) {
             answerlessConsumerProcedureReference = reinterpret_cast<void (*) (void*, const _ArgumentType&)>(consumerProcedureReference);
-            answerlessConsumerThis               = consumerThis;
-            nAnswerlessConsumerThese             = 1;
+            answerlessConsumerThese              = &consumerThese;
+            nAnswerlessConsumerThese             = nConsumerThese;
         }
 
-        template <typename _Class> void setAnswerfullConsumer(void (_Class::*consumerProcedureReference) (const _ArgumentType&, _AnswerType*, std::mutex&), _Class* consumerThis) {
+        template <typename _Class> void setAnswerfullConsumer(void (_Class::*consumerProcedureReference) (const _ArgumentType&, _AnswerType*, std::mutex&), _Class* &consumerThese, unsigned int nConsumerThese) {
             answerfullConsumerProcedureReference = reinterpret_cast<void (*) (void*, const _ArgumentType&, _AnswerType*, std::mutex&)>(consumerProcedureReference);;
-            answerfullConsumerThis               = consumerThis;
-            nAnswerfullConsumerThese             = 1;
+            answerfullConsumerThese              = &consumerThese;
+            nAnswerfullConsumerThese             = nConsumerThese;
         }
 
         void unsetConsumer() {
         	answerlessConsumerProcedureReference = nullptr;
-            memset(answerlessConsumerThis, 0);  // teremos que desconstruir
+            answerlessConsumerThese  = nullptr;
             nAnswerlessConsumerThese = 0;
             answerfullConsumerProcedureReference = nullptr;
-            memset(answerfullConsumerThis, 0);
+            answerfullConsumerThese  = nullptr;
             nAnswerfullConsumerThese = 0;
         }
 
@@ -120,21 +116,6 @@ namespace mutua::events {
             }
             listenerProcedureReferences[nListenerProcedureReferences] = reinterpret_cast<void (*) (void*, const _ArgumentType&)>(listenerProcedureReference);
                           listenersThis[nListenerProcedureReferences] = listenerThis;
-                  listenersConstructors[nListenerProcedureReferences] = nullptr;
-                   listenersDestructors[nListenerProcedureReferences] = nullptr;
-            nListenerProcedureReferences++;
-        }
-
-        /** Adds a listener to operate on instances created on demand, by calling the _Class' default constructor & destructor */
-        template <typename _Class> void addListener(void (_Class::*listenerProcedureReference) (const _ArgumentType&)) {
-            if (nListenerProcedureReferences >= _NListeners) {
-                THROW_EXCEPTION(overflow_error, "Out of listener slots (max="+to_string(_NListeners)+") while attempting to add a new event listener to '" + eventName + "' " +
-                                                "(you may wish to increase '_NListeners' at '" + eventName + "'s declaration)");
-            }
-            listenerProcedureReferences[nListenerProcedureReferences] = reinterpret_cast<void (*) (void*, const _ArgumentType&)>(listenerProcedureReference);
-                          listenersThis[nListenerProcedureReferences] = nullptr;
-                  listenersConstructors[nListenerProcedureReferences] = &_Class::ctor;
-                   listenersDestructors[nListenerProcedureReferences] = &_Class::dtor;
             nListenerProcedureReferences++;
         }
 
