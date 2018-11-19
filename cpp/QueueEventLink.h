@@ -20,7 +20,7 @@ namespace mutua::events {
      * Queue based communications between event producers/consumers & notifyers/observers.
      *
     */
-    template <typename _AnswerType, typename _ArgumentType, int _NListeners, uint_fast8_t _Log2_QueueSlots>
+    template <typename _AnswerType, typename _ArgumentType, int _NListeners, int _NConsumersThisPool, uint_fast8_t _Log2_QueueSlots>
     class QueueEventLink {
 
     public:
@@ -40,26 +40,29 @@ namespace mutua::events {
             		, reserved(false) {}
         };
 
-        // debug info
-        string eventName;
-
         // consumers
-        void (*answerlessConsumerProcedureReference) (void*, const _ArgumentType&);
-        void (*answerfullConsumerProcedureReference) (void*, const _ArgumentType&, _AnswerType*, std::mutex&);
-        void* answerlessConsumerThis;
-        void* answerfullConsumerThis;
+        void                     (*answerlessConsumerProcedureReference) (void*, const _ArgumentType&);
+        std::function<void*()>     answerlessConsumerInstantiator;               // reference to the default constructor or lambda to create a new instance of 'answerlessConsumerProcedureReference's class
+        void*                      answerlessConsumerThese[_NConsumersThisPool]; // pointers to instances (this) of the class on which the method 'answerlessConsumerProcedureReference' will act on
+        std::function<void(void*)> answerlessConsumerDeinstantiator;             // reference to destructor or lambda to free an instance of 'answerlessConsumerProcedureReference's class
+        unsigned int               nAnswerlessConsumerThese;
+        void                     (*answerfullConsumerProcedureReference) (void*, const _ArgumentType&, _AnswerType*, std::mutex&);
+        std::function<void*()>     answerfullConsumerInstantiator;               // reference to the default constructor or lambda to create a new instance of 'answerfullConsumerProcedureReference's class
+        void*                      answerfullConsumerThese[_NConsumersThisPool]; // pointers to instances (this) of the class on which the method 'answerfullConsumerProcedureReference' will act on
+        std::function<void(void*)> answerfullConsumerDeinstantiator;             // reference to destructor or lambda to free an instance of 'answerfullConsumerProcedureReference's class
+        unsigned int               nAnswerfullConsumerThese;
 
         // listeners
-        void (*listenerProcedureReferences[_NListeners]) (void*, const _ArgumentType&);
-        void* listenersThis[_NListeners];
+        void       (*listenerProcedureReferences[_NListeners]) (void*, const _ArgumentType&);
+        void*        listenersThis[_NListeners];
         unsigned int nListenerProcedureReferences;
 
         // mutexes
-        mutex  reservationGuard;
+        alignas(64) mutex  reservationGuard;
         alignas(64) mutex* fullGuard;
-        mutex  dequeueGuard;
+        alignas(64) mutex  dequeueGuard;
         alignas(64) mutex* emptyGuard;
-        mutex  queueGuard;
+        alignas(64) mutex  queueGuard;
 
         // queue
         alignas(64) QueueElement  events[numberOfQueueSlots];	// here are the elements of the queue
@@ -68,6 +71,10 @@ namespace mutua::events {
         alignas(64) unsigned int  queueReservedHead;  			// will never be  ahead of 'queueHead'
         alignas(64) unsigned int  queueReservedTail;  			// will never be behind of 'queueTail'
         // note: std::hardware_destructive_interference_size seems to not be supported in gcc -- 64 is x86_64 default (possibly the same for armv7)
+
+        // debug info
+        string eventName;
+
 
         QueueEventLink(string eventName)
                 : eventName                            (eventName)
@@ -87,18 +94,22 @@ namespace mutua::events {
         template <typename _Class> void setAnswerlessConsumer(void (_Class::*consumerProcedureReference) (const _ArgumentType&), _Class* consumerThis) {
             answerlessConsumerProcedureReference = reinterpret_cast<void (*) (void*, const _ArgumentType&)>(consumerProcedureReference);
             answerlessConsumerThis               = consumerThis;
+            nAnswerlessConsumerThese             = 1;
         }
 
         template <typename _Class> void setAnswerfullConsumer(void (_Class::*consumerProcedureReference) (const _ArgumentType&, _AnswerType*, std::mutex&), _Class* consumerThis) {
             answerfullConsumerProcedureReference = reinterpret_cast<void (*) (void*, const _ArgumentType&, _AnswerType*, std::mutex&)>(consumerProcedureReference);;
             answerfullConsumerThis               = consumerThis;
+            nAnswerfullConsumerThese             = 1;
         }
 
         void unsetConsumer() {
         	answerlessConsumerProcedureReference = nullptr;
-        	answerfullConsumerProcedureReference = nullptr;
-        	answerlessConsumerThis = nullptr;
-        	answerfullConsumerThis = nullptr;
+            memset(answerlessConsumerThis, 0);  // teremos que desconstruir
+            nAnswerlessConsumerThese = 0;
+            answerfullConsumerProcedureReference = nullptr;
+            memset(answerfullConsumerThis, 0);
+            nAnswerfullConsumerThese = 0;
         }
 
         /** Adds a listener to operate on a single instance, regardless of the number of dispatcher threads */
