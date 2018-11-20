@@ -31,12 +31,20 @@ namespace mutua::events {
         // queue elements
         struct alignas(64) QueueElement {
             _ArgumentType   eventParameter;
+            // for answerfull events
             _AnswerType*    answerObjectReference;
             mutex           answerMutex;
+            exception_ptr   exception;
+            bool            answered;
+            bool            listened;
+            // queue synchronization
             bool            reserved;		// keeps track of the conceded but not yet enqueued & conceded but not yet dequeued positions
 
             QueueElement()
             		: answerObjectReference(nullptr)
+                    , exception(nullptr)
+                    , answered(false)
+                    , listened(false)
             		, reserved(false) {}
         };
 
@@ -188,6 +196,9 @@ namespace mutua::events {
         	unsigned int eventId = reserveEventForReporting(eventParameterPointer);
             QueueElement& futureEvent         = events[eventId];
             futureEvent.answerObjectReference = answerObjectReference;
+            futureEvent.answered              = false;
+            futureEvent.listened              = false;
+            futureEvent.exception             = nullptr;
 			futureEvent.answerMutex.try_lock();		// prepare to wait for the answer
             return eventId;
         }
@@ -265,6 +276,17 @@ namespace mutua::events {
             }
         }
 
+        /** This method should be called both after notifications got processed and after 'waitForAnswer' done its job.
+          * Alloes 'eventId' to be reused. */
+        inline bool releaseAnswerfullEvent(unsigned int eventId) {
+            if (events[eventId].answered && events[eventId].listened) {
+                releaseEvent(eventId);
+                return true;
+            } else {
+                return false;
+            }
+        }
+
         // CONTINUANDO: só o dispatcher ou o interessado na resposta podem liberar o slot na fila
         // answerless, pode ser liberado pelo dispatcher após todos os listeners terem sido liberados
         // answerfull deve ser liberado pelo dispatcher (se a resposta ja tiver sido obtida) ou pelo
@@ -276,14 +298,32 @@ namespace mutua::events {
 
         inline _AnswerType* waitForAnswer(unsigned int eventId) {
             QueueElement& event = events[eventId];
-            if (event.answerObjectReference == nullptr) {
-                THROW_EXCEPTION(runtime_error, "Attempting to wait for an answer from an event of '" + this->eventName + "', which was not prepared to produce an answer. "
+            _AnswerType*    answerObjectReference = event->answerObjectReference;
+            if (answerObjectReference == nullptr) {
+                THROW_EXCEPTION(runtime_error, "Attempting to wait for an answer from an event of '" + eventName + "', which was not prepared to produce an answer. "
                                                "Did you call 'reserveEventForReporting(_ArgumentType)' instead of 'reserveEventForReporting(_ArgumentType&, const _AnswerType&)' ?");
             }
+            // wait until the answer is ready (the answerfull consumer must unlock the mutex as soon as the answer is ready)
             event.answerMutex.lock();
             event.answerMutex.unlock();
-            return event.answerObjectReference;
-            // we may now release the event slot if all listeners got notified already
+            event.answered = true;
+            // checks for any exception that might have been thrown
+            if (event.exception != nullptr) {
+                if (!answerObjectReference) {
+                    // exception happened before issueing the answer -- stop the thread flow.
+                    std::rethrow_exception(event.exception);
+                } else {
+                    // exception happened after issueing the answer -- we'll continue with a warning.
+                    // note: this code is likely not to be reached if 'waitForAnswer' was called before
+                    //       the answer was ready.
+                    cerr << "QueueEventLink: exception detected on event '" << eventName <<
+                            "', after the answerfull consumer sucessfully procuced an answer.\n" <<
+                            "(note: not all such exceptions will get caught by this method)" <<
+                            "Caused by: " << event.exception.what() << endl << flush;
+                }
+            }
+            releaseAnswerfullEvent(eventId);
+            return answerObjectReference;
         }
 
         inline void notifyEventListeners(const _ArgumentType& eventParameter) {

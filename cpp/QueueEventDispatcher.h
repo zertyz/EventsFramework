@@ -85,6 +85,12 @@ namespace mutua::events {
 			delete[] threads;
 		}
 
+		inline bool isMutexLocked(mutex& m) {
+			bool isLocked = !m.try_lock();
+			if (!isLocked) m.unlock();
+			return isLocked;
+		}
+
 		void stopASAP() {
 			if (isActive) {
 				for (int i=0; i<nThreads; i++) {
@@ -115,10 +121,18 @@ namespace mutua::events {
 				typename _QueueEventLink::AnswerfullEvent* dequeuedEvent) {
 			try {
 				consumerMethod(consumerThis, dequeuedEvent->eventParameter, dequeuedEvent->answerObjectReference, dequeuedEvent->answerMutex);
-			} catch () {
+			} catch (...) {
+				dequeuedEvent->exception = std::current_exception();
 				DUMP_EXCEPTION(runtime_error, e, "QueueEventDispatcher for event '"+el.eventName+"', thread #"+to_string(threadId)+": exception in answerfull consumer " +
 					                             "with parameter: "+eventParameterSerializer(dequeuedEvent->eventParameter)+". Event consumption will not be retryed, " +
-					                             "since a fallback queue is not yet implemented.");
+					                             "since a fallback queue is not yet implemented.\n" +
+					                             "Caused By: "+dequeuedEvent->exception.what());
+				// prepare the exeption to be visible when the caller issues an 'waitForAnswer'
+				if (isMutexLocked(dequeuedEvent->answerMutex)) {
+					// the exception happened before the answer was issued
+					dequeuedEvent->answerObjectReference = nullptr;
+					dequeuedEvent->answerMutex.unlock();
+				}
 			}
 		}
 
@@ -129,7 +143,7 @@ namespace mutua::events {
 				const _ArgumentType& eventParameter) {
 			for (unsigned int i=0; i<el.nListenerProcedureReferences; i++) try {
 				listenerMethods[i](listenersThis[i], eventParameter);
-			} catch () {
+			} catch (...) {
 				DUMP_EXCEPTION(runtime_error, e, "QueueEventDispatcher for event '"+el.eventName+"', thread #"+to_string(threadId)+": exception in event listener #"+to_string(i)+
 					                             "with parameter: "+eventParameterSerializer(eventParameter)+".");
 			}
@@ -155,7 +169,8 @@ namespace mutua::events {
 				eventId = el.reserveEventForDispatching(dequeuedEvent);
 				consumeAnswerfullEvent(threadId, el.answerfullConsumerProcedureReference, consumerThis,     dequeuedEvent);
 				notifyEventObservers  (threadId, el.listenerProcedureReferences,          el.listenersThis, dequeuedEvent->eventParameter);
-				el.releaseEvent(eventId);
+				dequeuedEvent.listened = true;
+				el.releaseAnswerfullEvent(eventId);
 			}
 		}
 
