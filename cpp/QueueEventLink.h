@@ -82,6 +82,10 @@ namespace mutua::events {
 
         QueueEventLink(string eventName)
                 : eventName                            (eventName)
+                , answerlessConsumerThese              (nullptr)
+				, nAnswerlessConsumerThese             (0)
+                , answerfullConsumerThese              (nullptr)
+				, nAnswerfullConsumerThese             (0)
                 , listenerProcedureReferences          {nullptr}
                 , listenersThis                        {nullptr}
                 , nListenerProcedureReferences         (0)
@@ -90,29 +94,48 @@ namespace mutua::events {
                 , queueHead                            (0)
                 , queueTail                            (0)
                 , queueReservedHead                    (0)
-                , queueReservedTail                    (0) {
+                , queueReservedTail                    (0) {}
 
-			unsetConsumer();
-		}
-
-        template <typename _Class> void setAnswerlessConsumer(void (_Class::*consumerProcedureReference) (const _ArgumentType&), _Class* &consumerThese, unsigned int nConsumerThese) {
-            answerlessConsumerProcedureReference = reinterpret_cast<void (*) (void*, const _ArgumentType&)>(consumerProcedureReference);
-            answerlessConsumerThese              = &consumerThese;
-            nAnswerlessConsumerThese             = nConsumerThese;
+        ~QueueEventLink() {
+        	unsetConsumer();
         }
 
-        template <typename _Class> void setAnswerfullConsumer(void (_Class::*consumerProcedureReference) (const _ArgumentType&, _AnswerType*, std::mutex&), _Class* &consumerThese, unsigned int nConsumerThese) {
+        template <typename _Class> void setAnswerlessConsumer(void (_Class::*consumerProcedureReference) (const _ArgumentType&), vector<_Class*> thisInstances) {
+            answerlessConsumerProcedureReference = reinterpret_cast<void (*) (void*, const _ArgumentType&)>(consumerProcedureReference);
+            nAnswerlessConsumerThese             = thisInstances.size();
+            // allocate ...
+            answerlessConsumerThese              = new void*[nAnswerlessConsumerThese];
+            // ... and fill the array
+            int i=0;
+            for (_Class* instance : thisInstances) {
+            	answerlessConsumerThese[i++] = instance;
+            }
+        }
+
+        template <typename _Class> void setAnswerfullConsumer(void (_Class::*consumerProcedureReference) (const _ArgumentType&, _AnswerType*, std::mutex&), vector<_Class*> thisInstances) {
             answerfullConsumerProcedureReference = reinterpret_cast<void (*) (void*, const _ArgumentType&, _AnswerType*, std::mutex&)>(consumerProcedureReference);;
-            answerfullConsumerThese              = &consumerThese;
-            nAnswerfullConsumerThese             = nConsumerThese;
+            nAnswerfullConsumerThese             = thisInstances.size();
+            // allocate ...
+            answerfullConsumerThese              = new void*[nAnswerfullConsumerThese];
+            // ... and fill the array
+            int i=0;
+            for (_Class* instance : thisInstances) {
+            	answerfullConsumerThese[i++] = instance;
+            }
         }
 
         void unsetConsumer() {
         	answerlessConsumerProcedureReference = nullptr;
-            answerlessConsumerThese  = nullptr;
+        	if (answerlessConsumerThese != nullptr) {
+        		delete[] answerlessConsumerThese;
+        		answerlessConsumerThese  = nullptr;
+        	}
             nAnswerlessConsumerThese = 0;
             answerfullConsumerProcedureReference = nullptr;
-            answerfullConsumerThese  = nullptr;
+            if (answerfullConsumerThese != nullptr) {
+            	delete[] answerfullConsumerThese;
+            	answerfullConsumerThese  = nullptr;
+            }
             nAnswerfullConsumerThese = 0;
         }
 
@@ -143,13 +166,9 @@ namespace mutua::events {
             }
             memcpy(&(listenerProcedureReferences[pos]), &(listenerProcedureReferences[pos+1]), (nListenerProcedureReferences - (pos+1)) * sizeof(listenerProcedureReferences[0]));
             memcpy(              &(listenersThis[pos]),               &(listenersThis[pos+1]), (nListenerProcedureReferences - (pos+1)) * sizeof(listenersThis[0]));
-            memcpy(      &(listenersConstructors[pos]),       &(listenersConstructors[pos+1]), (nListenerProcedureReferences - (pos+1)) * sizeof(listenersConstructors[0]));
-            memcpy(       &(listenersDestructors[pos]),        &(listenersDestructors[pos+1]), (nListenerProcedureReferences - (pos+1)) * sizeof(listenersDestructors[0]));
             nListenerProcedureReferences--;
             listenerProcedureReferences[nListenerProcedureReferences] = nullptr;
                           listenersThis[nListenerProcedureReferences] = nullptr;
-                  listenersConstructors[nListenerProcedureReferences] = nullptr;
-                   listenersDestructors[nListenerProcedureReferences] = nullptr;
             return true;
         }
 
@@ -325,28 +344,6 @@ namespace mutua::events {
             releaseAnswerfullEvent(eventId);
             return answerObjectReference;
         }
-
-        inline void notifyEventListeners(const _ArgumentType& eventParameter) {
-            for (int i=0; i<nListenerProcedureReferences; i++) {
-                listenerProcedureReferences[i](listenersThis[i], eventParameter);
-            }
-        }
-
-        /** Intended to be used by event dispatchers, this method consumes the event using the answerless consumer function pointer.
-         *  The queue slot may be immediately released for reused after all listeners get notified (see 'releaseEvent(...)') */
-        inline void consumeAnswerlessEvent(QueueElement* event) {
-			answerlessConsumerProcedureReference(answerlessConsumerThis, event->eventParameter);
-        }
-
-        /** Intended to be used by event dispatchers, this method consumes the event using the answerfull consumer function pointer.
-         *  The queue slot may be released for reused (with 'releaseEvent(...)') after:
-         *  1) all listeners get notified;
-         *  2) the event producer got the 'answer is ready' notification, with 'waitForAnswer(...)' */
-        inline void consumeAnswerfullEvent(QueueElement* event) {
-			answerfullConsumerProcedureReference(answerfullConsumerThis, event->eventParameter, event->answerObjectReference, event->answerMutex);
-                //reentrantlyReleaseSlot(eventId);  must only be released after the producer gets hold of 'answer'
-        }
-
     };
 }
 

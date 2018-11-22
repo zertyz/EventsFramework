@@ -1080,7 +1080,7 @@ BOOST_AUTO_TEST_CASE(alternativelyWaitForAConsumableEvent) {
 	qShits.addListener(&QueueEventLinkSuiteObjects::_eventListener256, (QueueEventLinkSuiteObjects*)this);
 	qShits.addListener(&QueueEventLinkSuiteObjects::_eventListener512, (QueueEventLinkSuiteObjects*)this);
 
-	qShits.setAnswerlessConsumer(&QueueEventLinkSuiteObjects::_answerlessEventConsumer, (QueueEventLinkSuiteObjects*)this);
+	qShits.setAnswerlessConsumer(&QueueEventLinkSuiteObjects::_answerlessEventConsumer, {(QueueEventLinkSuiteObjects*)this});
 
 	this_thread::sleep_for(chrono::milliseconds(300));
 
@@ -1097,10 +1097,10 @@ BOOST_AUTO_TEST_CASE(alternativelyWaitForAConsumableEvent) {
 	typename mutua::events::QueueEventLink<unsigned int, unsigned int, 10, 8>::QueueElement* dequeuedEvent;
 	unsigned int dispatchedEventId = qShits.reserveEventForDispatching(dequeuedEvent);
 	cerr << "Obtained dispatched eventId is " << dispatchedEventId << endl << flush;
-	qShits.consumeAnswerlessEvent(dequeuedEvent);
+	qShits.answerlessConsumerProcedureReference(qShits.answerlessConsumerThese[0], dequeuedEvent->eventParameter);
 	cerr << "Event was just consumed" << endl << flush;
-	qShits.notifyEventListeners(dequeuedEvent->eventParameter);
-	cerr << "Event was just notified" << endl << flush;
+//	qShits.notifyEventListeners(dequeuedEvent->eventParameter);
+//	cerr << "Event was just notified" << endl << flush;
 	qShits.releaseEvent(dispatchedEventId);
 	cerr << "Event was just released" << endl << flush;
 
@@ -1108,7 +1108,7 @@ BOOST_AUTO_TEST_CASE(alternativelyWaitForAConsumableEvent) {
 	this_thread::sleep_for(chrono::milliseconds(10));
 
 	BOOST_TEST(answerlessConsumedEvents[1] == 1,    "Event consumption");
-	BOOST_TEST(          notifyedEvents[1] == 1023, "Event notification");
+//	BOOST_TEST(          notifyedEvents[1] == 1023, "Event notification");
 
 	HEAP_TRACE("alternativelyWaitForAConsumableEvent", output);
 }
@@ -1151,10 +1151,10 @@ BOOST_AUTO_TEST_CASE(alternativelyBusyEventGeneration) {
 	HEAP_MARK();
 
 	mutua::events::QueueEventLink<unsigned int, unsigned int, 10, 8> myEvent("alternativelyBusyEventGeneration tests");
-	mutua::events::QueueEventDispatcher myDispatcher(myEvent, 3);
+	mutua::events::QueueEventDispatcher myDispatcher(myEvent, 3, 0, true, true, true, false);
 
 	myEvent.addListener          (&QueueEventLinkSuiteObjects::_eventListener1,          (QueueEventLinkSuiteObjects*)this);
-	myEvent.setAnswerlessConsumer(&QueueEventLinkSuiteObjects::_answerlessEventConsumer, (QueueEventLinkSuiteObjects*)this);
+	myEvent.setAnswerlessConsumer(&QueueEventLinkSuiteObjects::_answerlessEventConsumer, {(QueueEventLinkSuiteObjects*)this});
 
 	cerr << "coco antes" << endl << flush;
 	this_thread::sleep_for(chrono::milliseconds(300));

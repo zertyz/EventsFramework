@@ -3,7 +3,10 @@
 
 #include <iostream>
 #include <thread>
-#include <initializer_list>
+#include <mutex>
+#include <pthread.h>
+#include <type_traits>
+#include <stdexcept>
 using namespace std;
 
 #include <BetterExceptions.h>
@@ -25,10 +28,17 @@ namespace mutua::events {
 	template <class _QueueEventLink>
 	struct QueueEventDispatcher {
 
-		bool              isActive;
+		// types from _QueueEventLink:
+		typedef  decltype(_QueueEventLink::QueueElement::answerObjectReference) _AnswerTypePointer;
+		typedef std::remove_pointer<_AnswerTypePointer>                         _AnswerType;
+		typedef decltype(_QueueEventLink::QueueElement::eventParameter)         _ArgumentType;
+
+		bool             isActive;
 		_QueueEventLink& el;
-		int               nThreads;
-		thread*           threads;
+		int              nThreads;
+		thread*          threads;
+
+		string (*eventParameterToStringSerializer) (const _ArgumentType&);
 
 		QueueEventDispatcher(_QueueEventLink& el,
 		                     int              nThreads,
@@ -43,8 +53,8 @@ namespace mutua::events {
 
 			// checks
 			if (threadsPriority != 0) {
-                THROW_EXCEPTION(not_implemented_error, "QueueEventDispatcher: Attempting to create a dispatcher for event '"+el.eventName+"' with custom " +
-                                                       "'threadsPriority', and this is not implemented yet -- it must be zero in the meantime.");
+                THROW_EXCEPTION(invalid_argument, "QueueEventDispatcher: Attempting to create a dispatcher for event '"+el.eventName+"' with custom " +
+                                                  "'threadsPriority', and this is not implemented yet -- it must be zero in the meantime.");
 			}
 			if ( consumeAnswerlessEvents && (nThreads > el.nAnswerlessConsumerThese) ) {
 				THROW_EXCEPTION(runtime_error, "QueueEventDispatcher: Attempting to create a dispatcher for event '"+el.eventName+"' with "+to_string(nThreads)+" threads, " +
@@ -63,21 +73,36 @@ namespace mutua::events {
 				/**/ if ( zeroCopy &&  notifyEvents &&  consumeAnswerlessEvents && !consumeAnswerfullEvents )
 					threads[i] = thread(&QueueEventDispatcher::dispatchZeroCopyListeneableAndConsumableAnswerlessEventsLoop, this, i, el.answerlessConsumerThese[i%el.nAnswerlessConsumerThese]);
 				else if ( zeroCopy &&  notifyEvents && !consumeAnswerlessEvents &&  consumeAnswerfullEvents )
-					threads[i] = thread(&QueueEventDispatcher::dispatchZeroCopyListeneableAndConsumableAnswerfullEventsLoop, this, i);
+					threads[i] = thread(&QueueEventDispatcher::dispatchZeroCopyListeneableAndConsumableAnswerfullEventsLoop, this, i, el.answerfullConsumerThese[i%el.nAnswerlessConsumerThese]);
 				else if ( zeroCopy && !notifyEvents &&  consumeAnswerlessEvents && !consumeAnswerfullEvents )
-					threads[i] = thread(&QueueEventDispatcher::dispatchZeroCopyConsumableAnswerlessEventsLoop,               this, i);
+					threads[i] = thread(&QueueEventDispatcher::dispatchZeroCopyConsumableAnswerlessEventsLoop,               this, i, el.answerlessConsumerThese[i%el.nAnswerlessConsumerThese]);
 				else if ( zeroCopy && !notifyEvents && !consumeAnswerlessEvents &&  consumeAnswerfullEvents )
-					threads[i] = thread(&QueueEventDispatcher::dispatchZeroCopyConsumableAnswerfullEventsLoop,               this, i);
+					threads[i] = thread(&QueueEventDispatcher::dispatchZeroCopyConsumableAnswerfullEventsLoop,               this, i, el.answerfullConsumerThese[i%el.nAnswerlessConsumerThese]);
 				else if ( zeroCopy &&  notifyEvents && !consumeAnswerlessEvents && !consumeAnswerfullEvents )
 					threads[i] = thread(&QueueEventDispatcher::dispatchZeroCopyListeneableEventsLoop,                        this, i);
 				else
-	                THROW_EXCEPTION(not_implemented_error, "QueueEventDispatcher: Attempting to create a dispatcher for event '"+el.eventName+"' with a not implemented combination of " +
+	                THROW_EXCEPTION(invalid_argument, "QueueEventDispatcher: Attempting to create a dispatcher for event '"+el.eventName+"' with a not implemented combination of " +
 	                                                       "'zeroCopy' (" +                to_string(zeroCopy)+"), " +
 	                                                       "'notifyEvents' (" +            to_string(notifyEvents)+"), " +
 	                                                       "'consumeAnswerlessEvents' (" + to_string(consumeAnswerlessEvents)+") and " +
 	                                                       "'consumeAnswerfullEvents' (" + to_string(consumeAnswerfullEvents)+")");
 			}
 			/*threads[nThreads] = thread(&QueueEventDispatcher::debug, this);*/
+
+			setArgumentSerializer();
+		}
+
+		//static string defaultEventParameterToStringSerializer(         int& argument) { return to_string(argument); }
+		static string defaultEventParameterToStringSerializer(const unsigned int& argument) { return to_string(argument); }
+
+		void setArgumentSerializer() {
+			if constexpr (std::is_integral<_ArgumentType>::value) {
+				eventParameterToStringSerializer = defaultEventParameterToStringSerializer;
+			} else if (std::is_class<_ArgumentType>::value) {
+				eventParameterToStringSerializer = _ArgumentType::toString;
+			} else {
+                THROW_EXCEPTION(invalid_argument, "QueueEventDispatcher: Don't know how to serialize the given _ArgumentType for event '"+el.eventName+"'.");
+			}
 		}
 
 		~QueueEventDispatcher() {
@@ -107,26 +132,62 @@ namespace mutua::events {
 				const _ArgumentType& eventParameter) {
 			try {
 				consumerMethod(consumerThis, eventParameter);
-			} catch () {
-				DUMP_EXCEPTION(runtime_error, e, "QueueEventDispatcher for event '"+el.eventName+"', thread #"+to_string(threadId)+": exception in answerless consumer " +
-					                             "with parameter: "+eventParameterSerializer(eventParameter)+". Event consumption will not be retryed, " +
-					                             "since a fallback queue is not yet implemented.");
+			} catch (const exception& e) {
+				DUMP_EXCEPTION(runtime_error("Exception in answerless consumer: "s + e.what()),
+						       "QueueEventDispatcher for event '"+el.eventName+"', thread #"+to_string(threadId)+": exception in answerless consumer " +
+					           "with parameter: "+eventParameterToStringSerializer(eventParameter)+". Event consumption will not be retried, " +
+					           "since a fall-back queue is not yet implemented.\n" +
+				               "Caused by: "+e.what(),
+				               "threadId",       to_string(threadId),
+				               "consumerMethod", to_string((size_t)consumerMethod),
+				               "consumerThis",   to_string((size_t)consumerThis),
+				               "eventParameter", eventParameterToStringSerializer(eventParameter));
+			} catch (...) {
+				DUMP_EXCEPTION(runtime_error("Unknown exception in answerless consumer"),
+				               "QueueEventDispatcher for event '"+el.eventName+"', thread #"+to_string(threadId)+": exception in answerless consumer " +
+				               "with parameter: "+eventParameterToStringSerializer(eventParameter)+". Event consumption will not be retried, " +
+				               "since a fall-back queue is not yet implemented.\n" +
+				               "Caused by: <<unknown cause>>",
+				               "threadId",       to_string(threadId),
+				               "consumerMethod", to_string((size_t)consumerMethod),
+				               "consumerThis",   to_string((size_t)consumerThis),
+				               "eventParameter", eventParameterToStringSerializer(eventParameter));
 			}
 		}
 
 		inline void consumeAnswerfullEvent(
 				unsigned int                               threadId,
-				void                                     (*consumerMethod) (void*, const _ArgumentType&, _AnswerType*, std::mutex&),
+//				void                                     (*consumerMethod) (void*, const _ArgumentType&, _AnswerType*, std::mutex&),
+				decltype(_QueueEventLink::answerfullConsumerProcedureReference) consumerMethod,
 				void*                                      consumerThis,
-				typename _QueueEventLink::AnswerfullEvent* dequeuedEvent) {
+				typename _QueueEventLink::QueueElement*    dequeuedEvent) {
 			try {
 				consumerMethod(consumerThis, dequeuedEvent->eventParameter, dequeuedEvent->answerObjectReference, dequeuedEvent->answerMutex);
+			} catch (const exception& e) {
+				dequeuedEvent->exception = std::current_exception();
+				DUMP_EXCEPTION(runtime_error("Exception in answerfull consumer: "s + e.what()),
+				               "QueueEventDispatcher for event '"+el.eventName+"', thread #"+to_string(threadId)+": exception in answerfull consumer " +
+				               "with parameter: "+eventParameterToStringSerializer(dequeuedEvent->eventParameter)+". Event consumption will not be retried, " +
+				               "since a fall-back queue is not yet implemented.\n" +
+				               "Caused By: "+e.what(),
+				               "threadId",              to_string(threadId),
+				               "consumerMethod",        to_string((size_t)consumerMethod),
+				               "consumerThis",          to_string((size_t)consumerThis),
+				               "answerObjectReference", to_string((size_t)dequeuedEvent->answerObjectReference),
+				               "eventParameter",        eventParameterToStringSerializer(dequeuedEvent->eventParameter));
 			} catch (...) {
 				dequeuedEvent->exception = std::current_exception();
-				DUMP_EXCEPTION(runtime_error, e, "QueueEventDispatcher for event '"+el.eventName+"', thread #"+to_string(threadId)+": exception in answerfull consumer " +
-					                             "with parameter: "+eventParameterSerializer(dequeuedEvent->eventParameter)+". Event consumption will not be retryed, " +
-					                             "since a fallback queue is not yet implemented.\n" +
-					                             "Caused By: "+dequeuedEvent->exception.what());
+				DUMP_EXCEPTION(runtime_error("Unknown exception in answerless consumer"),
+				               "QueueEventDispatcher for event '"+el.eventName+"', thread #"+to_string(threadId)+": exception in answerfull consumer " +
+				               "with parameter: "+eventParameterToStringSerializer(dequeuedEvent->eventParameter)+". Event consumption will not be retried, " +
+				               "since a fall-back queue is not yet implemented.\n" +
+				               "Caused By: <<unknown cause>>",
+				               "threadId",              to_string(threadId),
+				               "consumerMethod",        to_string((size_t)consumerMethod),
+				               "consumerThis",          to_string((size_t)consumerThis),
+				               "answerObjectReference", to_string((size_t)dequeuedEvent->answerObjectReference),
+				               "eventParameter",        eventParameterToStringSerializer(dequeuedEvent->eventParameter));
+
 				// prepare the exeption to be visible when the caller issues an 'waitForAnswer'
 				if (isMutexLocked(dequeuedEvent->answerMutex)) {
 					// the exception happened before the answer was issued
@@ -143,9 +204,25 @@ namespace mutua::events {
 				const _ArgumentType& eventParameter) {
 			for (unsigned int i=0; i<el.nListenerProcedureReferences; i++) try {
 				listenerMethods[i](listenersThis[i], eventParameter);
+			} catch (const exception& e) {
+				DUMP_EXCEPTION(runtime_error("Exception in listener: "s + e.what()),
+				               "QueueEventDispatcher for event '"+el.eventName+"', thread #"+to_string(threadId)+": exception in event listener #"+to_string(i)+
+				               "with parameter: "+eventParameterToStringSerializer(eventParameter)+".\n" +
+				               "Caused by: "+e.what(),
+				               "threadId",                         to_string(threadId),
+				               "listenerMethod["+to_string(i)+"]", to_string((size_t)listenerMethods[i]),
+				               "listenerThis["+to_string(i)+"]",   to_string((size_t)listenersThis[i]),
+				               "eventParameter",                   eventParameterToStringSerializer(eventParameter));
 			} catch (...) {
-				DUMP_EXCEPTION(runtime_error, e, "QueueEventDispatcher for event '"+el.eventName+"', thread #"+to_string(threadId)+": exception in event listener #"+to_string(i)+
-					                             "with parameter: "+eventParameterSerializer(eventParameter)+".");
+				std::exception_ptr e = std::current_exception();
+				DUMP_EXCEPTION(runtime_error("Unknown Exception in listener"),
+				               "QueueEventDispatcher for event '"+el.eventName+"', thread #"+to_string(threadId)+": exception in event listener #"+to_string(i)+
+				               "with parameter: "+eventParameterToStringSerializer(eventParameter)+".\n" +
+				               "Caused by: <<unknown cause>>",
+				               "threadId",                         to_string(threadId),
+				               "listenerMethod["+to_string(i)+"]", to_string((size_t)listenerMethods[i]),
+				               "listenerThis["+to_string(i)+"]",   to_string((size_t)listenersThis[i]),
+				               "eventParameter",                   eventParameterToStringSerializer(eventParameter));
 			}
 		}
 
@@ -169,7 +246,7 @@ namespace mutua::events {
 				eventId = el.reserveEventForDispatching(dequeuedEvent);
 				consumeAnswerfullEvent(threadId, el.answerfullConsumerProcedureReference, consumerThis,     dequeuedEvent);
 				notifyEventObservers  (threadId, el.listenerProcedureReferences,          el.listenersThis, dequeuedEvent->eventParameter);
-				dequeuedEvent.listened = true;
+				dequeuedEvent->listened = true;
 				el.releaseAnswerfullEvent(eventId);
 			}
 		}
