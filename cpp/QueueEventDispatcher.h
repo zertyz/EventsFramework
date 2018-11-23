@@ -40,34 +40,41 @@ namespace mutua::events {
 
 		string (*eventParameterToStringSerializer) (const _ArgumentType&);
 
+		/** Instantiate a QueueEventDispatcher with the given  */
 		QueueEventDispatcher(_QueueEventLink& el,
 		                     int              nThreads,
 		                     int              threadsPriority,
 							 bool             zeroCopy,
 							 bool             notifyEvents,
 							 bool             consumeAnswerlessEvents,
-							 bool             consumeAnswerfullEvents)
+							 bool             consumeAnswerfullEvents,
+							 bool             debug)
 				: isActive(true)
 				, el(el)
-				, nThreads(nThreads/*+1*/) {
+				, nThreads(nThreads+(debug ? 1 : 0)) {
 
 			// checks
 			if (threadsPriority != 0) {
                 THROW_EXCEPTION(invalid_argument, "QueueEventDispatcher: Attempting to create a dispatcher for event '"+el.eventName+"' with custom " +
                                                   "'threadsPriority', and this is not implemented yet -- it must be zero in the meantime.");
 			}
+			if ( consumeAnswerlessEvents && (el.answerlessConsumerProcedureReference == nullptr) ) {
+				THROW_EXCEPTION(runtime_error, "QueueEventDispatcher: Attempting instantiate 'QueueEventDispatcher' before a consumer was set in QueueEventLink. This limitation might be improved in the future.");
+			}
 			if ( consumeAnswerlessEvents && (nThreads > el.nAnswerlessConsumerThese) ) {
 				THROW_EXCEPTION(runtime_error, "QueueEventDispatcher: Attempting to create a dispatcher for event '"+el.eventName+"' with "+to_string(nThreads)+" threads, " +
                                                "but the given QueueEventLink is set to have only "+to_string(el.nAnswerlessConsumerThese)+" consumer objects on the instance pool " +
-                                               "and this combination is not optimal. Please, arranje that -- most probably by increasing the array of objects given to 'setAnswerlessConsumer(...)'");
+                                               "and this combination is not optimal. Please, arrange that -- most probably by increasing the array of objects given to 'setAnswerlessConsumer(...)'.\n" +
+											   "note: by now you must only instantiate a 'QueueEventDispatcher' after you have set the QueueEventLink consumer. This limitation might be improved in the future.");
 			}
 			if ( consumeAnswerfullEvents && (nThreads > el.nAnswerfullConsumerThese) ) {
 				THROW_EXCEPTION(runtime_error, "QueueEventDispatcher: Attempting to create a dispatcher for event '"+el.eventName+"' with "+to_string(nThreads)+" threads, " +
                                                "but the given QueueEventLink is set to have only "+to_string(el.nAnswerfullConsumerThese)+" consumer objects on the instance pool " +
-                                               "and this combination is not optimal. Please, arranje that -- most probably by increasing the array of objects given to 'setAnswerfullConsumer(...)'");
+                                               "and this combination is not optimal. Please, arrange that -- most probably by increasing the array of objects given to 'setAnswerfullConsumer(...)'.\n" +
+											   "note: by now you must only instantiate a 'QueueEventDispatcher' after you have set the QueueEventLink consumer. This limitation might be improved in the future.");
 			}
 
-			threads = new thread[nThreads/*+1*/];
+			threads = new thread[nThreads+(debug ? 1 : 0)];
 
 			for (int i=0; i<nThreads; i++) {
 				/**/ if ( zeroCopy &&  notifyEvents &&  consumeAnswerlessEvents && !consumeAnswerfullEvents )
@@ -82,12 +89,16 @@ namespace mutua::events {
 					threads[i] = thread(&QueueEventDispatcher::dispatchZeroCopyListeneableEventsLoop,                        this, i);
 				else
 	                THROW_EXCEPTION(invalid_argument, "QueueEventDispatcher: Attempting to create a dispatcher for event '"+el.eventName+"' with a not implemented combination of " +
-	                                                       "'zeroCopy' (" +                to_string(zeroCopy)+"), " +
-	                                                       "'notifyEvents' (" +            to_string(notifyEvents)+"), " +
-	                                                       "'consumeAnswerlessEvents' (" + to_string(consumeAnswerlessEvents)+") and " +
-	                                                       "'consumeAnswerfullEvents' (" + to_string(consumeAnswerfullEvents)+")");
+	                                                  "'zeroCopy' (" +                to_string(zeroCopy)+"), " +
+	                                                  "'notifyEvents' (" +            to_string(notifyEvents)+"), " +
+	                                                  "'consumeAnswerlessEvents' (" + to_string(consumeAnswerlessEvents)+") and " +
+	                                                  "'consumeAnswerfullEvents' (" + to_string(consumeAnswerfullEvents)+")");
 			}
-			/*threads[nThreads] = thread(&QueueEventDispatcher::debug, this);*/
+
+			// start debugger thread?
+			if (debug) {
+				threads[nThreads] = thread(&QueueEventDispatcher::debugTracker, this);
+			}
 
 			setArgumentSerializer();
 		}
@@ -126,10 +137,10 @@ namespace mutua::events {
 		}
 
 		inline void consumeAnswerlessEvent(
-				unsigned int        threadId,
-				void                (*consumerMethod) (void*, const _ArgumentType&),
-				void*                consumerThis,
-				const _ArgumentType& eventParameter) {
+				unsigned int                                                    threadId,
+				decltype(_QueueEventLink::answerlessConsumerProcedureReference) consumerMethod,
+				void*                                                           consumerThis,
+				const _ArgumentType&                                            eventParameter) {
 			try {
 				consumerMethod(consumerThis, eventParameter);
 			} catch (const exception& e) {
@@ -156,11 +167,10 @@ namespace mutua::events {
 		}
 
 		inline void consumeAnswerfullEvent(
-				unsigned int                               threadId,
-//				void                                     (*consumerMethod) (void*, const _ArgumentType&, _AnswerType*, std::mutex&),
+				unsigned int                                                    threadId,
 				decltype(_QueueEventLink::answerfullConsumerProcedureReference) consumerMethod,
-				void*                                      consumerThis,
-				typename _QueueEventLink::QueueElement*    dequeuedEvent) {
+				void*                                                           consumerThis,
+				typename _QueueEventLink::QueueElement*                         dequeuedEvent) {
 			try {
 				consumerMethod(consumerThis, dequeuedEvent->eventParameter, dequeuedEvent->answerObjectReference, dequeuedEvent->answerMutex);
 			} catch (const exception& e) {
@@ -198,10 +208,10 @@ namespace mutua::events {
 		}
 
 		inline void notifyEventObservers(
-				unsigned int         threadId,
-				void              (**listenerMethods) (void*, const _ArgumentType&),
-				void*               *listenersThis,
-				const _ArgumentType& eventParameter) {
+				unsigned int                                           threadId,
+				decltype(_QueueEventLink::listenerProcedureReferences) listenerMethods,
+				void*                                                 *listenersThis,
+				const _ArgumentType&                                   eventParameter) {
 			for (unsigned int i=0; i<el.nListenerProcedureReferences; i++) try {
 				listenerMethods[i](listenersThis[i], eventParameter);
 			} catch (const exception& e) {
@@ -285,7 +295,7 @@ namespace mutua::events {
 		}
 
 
-		void debug() {
+		void debugTracker() {
 			bool isReservationGuardLocked;
 			bool isFullGuardNotNull;
 			bool isQueueGuardLocked;
@@ -303,7 +313,7 @@ namespace mutua::events {
 				if (!isQueueGuardLocked)       el.queueGuard.unlock();
 				if (!isDequeueGuardLocked)     el.dequeueGuard.unlock();
 
-				cerr << "\nrHead=" << el.queueReservedHead << "; rTail=" << el.queueReservedTail << "; ((queueReservedTail+1) & 0xFF)=" << ((el.queueReservedTail+1) & 0xFF) << "; reservations[queueReservedHead]=" << el.reservations[el.queueReservedHead] << "; isReservationGuardLocked=" << isReservationGuardLocked << "; isFullGuardNotNull=" << isFullGuardNotNull << "; isQueueGuardLocked=" << isQueueGuardLocked << "; isDequeueGuardLocked=" << isDequeueGuardLocked << "; isEmptyGuardNotNull=" << isEmptyGuardNotNull << endl << flush;
+				cerr << "\nQueueEventDispatcher('" << el.eventName << "'): rHead=" << el.queueReservedHead << "; rTail=" << el.queueReservedTail << "; reservedLength: " << el.getQueueReservedLength() << "; ((queueReservedTail+1) & " << el.queueSlotsModulus << ")=" << ((el.queueReservedTail+1) & el.queueSlotsModulus) << "; reservations[queueReservedHead]=" << el.events[el.queueReservedHead].reserved << "; isReservationGuardLocked=" << isReservationGuardLocked << "; isFullGuardNotNull=" << isFullGuardNotNull << "; isQueueGuardLocked=" << isQueueGuardLocked << "; isDequeueGuardLocked=" << isDequeueGuardLocked << "; isEmptyGuardNotNull=" << isEmptyGuardNotNull << endl << flush;
 				this_thread::sleep_for(chrono::milliseconds(1000));
 			}
 		}

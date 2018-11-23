@@ -106,9 +106,8 @@ namespace mutua::events {
             // allocate ...
             answerlessConsumerThese              = new void*[nAnswerlessConsumerThese];
             // ... and fill the array
-            int i=0;
-            for (_Class* instance : thisInstances) {
-            	answerlessConsumerThese[i++] = instance;
+            for (int i=0; i<thisInstances.size(); i++) {
+            	answerlessConsumerThese[i] = thisInstances[i];
             }
         }
 
@@ -118,9 +117,8 @@ namespace mutua::events {
             // allocate ...
             answerfullConsumerThese              = new void*[nAnswerfullConsumerThese];
             // ... and fill the array
-            int i=0;
-            for (_Class* instance : thisInstances) {
-            	answerfullConsumerThese[i++] = instance;
+            for (int i=0; i<thisInstances.size(); i++) {
+            	answerfullConsumerThese[i] = thisInstances[i];
             }
         }
 
@@ -170,6 +168,24 @@ namespace mutua::events {
             listenerProcedureReferences[nListenerProcedureReferences] = nullptr;
                           listenersThis[nListenerProcedureReferences] = nullptr;
             return true;
+        }
+
+        /** Queue length, differently than the queue size, is the number of elements currently waiting to be dequeued */
+        unsigned int getQueueLength() {
+        	if (queueTail >= queueHead) {
+        		return queueTail - queueHead;
+        	} else {
+        		return (numberOfQueueSlots + queueTail) - queueHead;
+        	}
+        }
+
+        /** Returns the number of slots that are currently holding a dequeuable element + the ones that are currently compromised into holding one of those */
+        unsigned int getQueueReservedLength() {
+        	if (queueReservedTail >= queueReservedHead) {
+        		return queueReservedTail - queueReservedHead;
+        	} else {
+        		return (numberOfQueueSlots + queueReservedTail) - queueReservedHead;
+        	}
         }
 
         /** Reserves an 'eventId' (and returns it) for further enqueueing.
@@ -230,15 +246,12 @@ namespace mutua::events {
         	events[eventId].reserved = false;
             if (eventId == queueTail) {
                 queueTail = (queueTail+1) & queueSlotsModulus;
-                // unlock if someone was waiting on the empty queue
-                queueGuard.unlock();
                 if (emptyGuard) {
                 	emptyGuard->unlock();
                 	emptyGuard = nullptr;
                 }
-            } else {
-            	queueGuard.unlock();
             }
+			queueGuard.unlock();
         }
 
         /** Starts the zero-copy dequeueing process.
@@ -284,15 +297,12 @@ namespace mutua::events {
         	events[eventId].reserved = false;
             if (eventId == queueReservedHead) {
                 queueReservedHead = (queueReservedHead+1) & queueSlotsModulus;
-                // unlock if someone was waiting on the full queue
-                queueGuard.unlock();
                 if (fullGuard) {
                 	fullGuard->unlock();
                 	fullGuard = nullptr;
                 }
-            } else {
-            	queueGuard.unlock();
             }
+			queueGuard.unlock();
         }
 
         /** This method should be called both after notifications got processed and after 'waitForAnswer' done its job.

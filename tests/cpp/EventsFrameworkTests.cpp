@@ -1151,10 +1151,10 @@ BOOST_AUTO_TEST_CASE(alternativelyBusyEventGeneration) {
 	HEAP_MARK();
 
 	mutua::events::QueueEventLink<unsigned int, unsigned int, 10, 8> myEvent("alternativelyBusyEventGeneration tests");
-	mutua::events::QueueEventDispatcher myDispatcher(myEvent, 3, 0, true, true, true, false);
-
+	myEvent.setAnswerlessConsumer(&QueueEventLinkSuiteObjects::_answerlessEventConsumer, {(QueueEventLinkSuiteObjects*)this, (QueueEventLinkSuiteObjects*)this, (QueueEventLinkSuiteObjects*)this});
+//	mutua::events::QueueEventDispatcher myDispatcher(myEvent, 3, 0, true, true, true, false, true);
+	mutua::events::QueueEventDispatcher myDispatcher(myEvent, 3, 0, true, false, true, false, true);
 	myEvent.addListener          (&QueueEventLinkSuiteObjects::_eventListener1,          (QueueEventLinkSuiteObjects*)this);
-	myEvent.setAnswerlessConsumer(&QueueEventLinkSuiteObjects::_answerlessEventConsumer, {(QueueEventLinkSuiteObjects*)this});
 
 	cerr << "coco antes" << endl << flush;
 	this_thread::sleep_for(chrono::milliseconds(300));
@@ -1172,7 +1172,7 @@ BOOST_AUTO_TEST_CASE(alternativelyBusyEventGeneration) {
 			*reservedParameterReference = i;
 			myEvent.reportReservedEvent(eventId);
 //			cerr << " = " << i << endl << flush;
-			//if (i%10 == 0) this_thread::sleep_for(chrono::milliseconds(1));
+			if (i%10 == 0) this_thread::sleep_for(chrono::milliseconds(1));
 			//this_thread::sleep_for(chrono::milliseconds(16));
 		}
 	}
@@ -1180,9 +1180,9 @@ BOOST_AUTO_TEST_CASE(alternativelyBusyEventGeneration) {
 	this_thread::sleep_for(chrono::milliseconds(500));
 	myDispatcher.stopASAP();
 
-	checkAllElements(answerlessConsumedEvents, notifyedEvents, 64);
 	BOOST_TEST(answerlessConsumedEvents[1] == 64);
 	BOOST_TEST(          notifyedEvents[1] == 64);
+	checkAllElements(answerlessConsumedEvents, notifyedEvents, 64);
 
 	HEAP_TRACE("alternativelyBusyEventGeneration", output);
 }
