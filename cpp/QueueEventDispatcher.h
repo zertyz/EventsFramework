@@ -103,12 +103,13 @@ namespace mutua::events {
 			setArgumentSerializer();
 		}
 
-		//static string defaultEventParameterToStringSerializer(         int& argument) { return to_string(argument); }
+		// default serializers
 		static string defaultEventParameterToStringSerializer(const unsigned int& argument) { return to_string(argument); }
+		static string defaultEventParameterToStringSerializer(            string& argument) { return argument; }
 
 		void setArgumentSerializer() {
-			if constexpr (std::is_integral<_ArgumentType>::value) {
-				eventParameterToStringSerializer = defaultEventParameterToStringSerializer;
+			if constexpr (std::is_integral<_ArgumentType>::value || std::is_constructible<std::string, _ArgumentType>::value) {
+				eventParameterToStringSerializer = static_cast<string (*) (const _ArgumentType&)>(defaultEventParameterToStringSerializer);
 			} else if (std::is_class<_ArgumentType>::value) {
 				eventParameterToStringSerializer = _ArgumentType::toString;
 			} else {
@@ -198,7 +199,7 @@ namespace mutua::events {
 				               "answerObjectReference", to_string((size_t)dequeuedEvent->answerObjectReference),
 				               "eventParameter",        eventParameterToStringSerializer(dequeuedEvent->eventParameter));
 
-				// prepare the exeption to be visible when the caller issues an 'waitForAnswer'
+				// prepare the exception to be visible when the caller issues an 'waitForAnswer'
 				if (isMutexLocked(dequeuedEvent->answerMutex)) {
 					// the exception happened before the answer was issued
 					dequeuedEvent->answerObjectReference = nullptr;
