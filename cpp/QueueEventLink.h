@@ -101,7 +101,13 @@ namespace mutua::events {
         }
 
         template <typename _Class> void setAnswerlessConsumer(void (_Class::*consumerProcedureReference) (const _ArgumentType&), vector<_Class*> thisInstances) {
-            answerlessConsumerProcedureReference = reinterpret_cast<void (*) (void*, const _ArgumentType&)>(consumerProcedureReference);
+            union {
+                void (*genericFuncPtr) (void*, const _ArgumentType&);
+                void (_Class::*specificFuncPtr) (const _ArgumentType&);
+            };
+            // set the generic function pointer from the specific one
+            specificFuncPtr                      = consumerProcedureReference;
+            answerlessConsumerProcedureReference = genericFuncPtr;
             nAnswerlessConsumerThese             = thisInstances.size();
             // allocate ...
             answerlessConsumerThese              = new void*[nAnswerlessConsumerThese];
@@ -112,7 +118,13 @@ namespace mutua::events {
         }
 
         template <typename _Class> void setAnswerfullConsumer(void (_Class::*consumerProcedureReference) (const _ArgumentType&, _AnswerType*, std::mutex&), vector<_Class*> thisInstances) {
-            answerfullConsumerProcedureReference = reinterpret_cast<void (*) (void*, const _ArgumentType&, _AnswerType*, std::mutex&)>(consumerProcedureReference);;
+            union {
+                void (*genericFuncPtr) (void*, const _ArgumentType&, _AnswerType*, std::mutex&);
+                void (_Class::*specificFuncPtr) (const _ArgumentType&, _AnswerType*, std::mutex&);
+            };
+            // set the generic function pointer from the specific one
+            specificFuncPtr                      = consumerProcedureReference;
+            answerfullConsumerProcedureReference = genericFuncPtr;
             nAnswerfullConsumerThese             = thisInstances.size();
             // allocate ...
             answerfullConsumerThese              = new void*[nAnswerfullConsumerThese];
@@ -139,11 +151,17 @@ namespace mutua::events {
 
         /** Adds a listener to operate on a single instance, regardless of the number of dispatcher threads */
         template <typename _Class> void addListener(void (_Class::*listenerProcedureReference) (const _ArgumentType&), _Class* listenerThis) {
+            union {
+                void (*genericFuncPtr) (void*, const _ArgumentType&);
+                void (_Class::*specificFuncPtr) (const _ArgumentType&);
+            };
             if (nListenerProcedureReferences >= _NListeners) {
                 THROW_EXCEPTION(overflow_error, "Out of listener slots (max="+to_string(_NListeners)+") while attempting to add a new event listener to '" + eventName + "' " +
                                                 "(you may wish to increase '_NListeners' at '" + eventName + "'s declaration)");
             }
-            listenerProcedureReferences[nListenerProcedureReferences] = reinterpret_cast<void (*) (void*, const _ArgumentType&)>(listenerProcedureReference);
+            // set the generic function pointer from the specific one
+            specificFuncPtr                                           = listenerProcedureReference;
+            listenerProcedureReferences[nListenerProcedureReferences] = genericFuncPtr;
                           listenersThis[nListenerProcedureReferences] = listenerThis;
             nListenerProcedureReferences++;
         }

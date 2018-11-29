@@ -521,303 +521,6 @@ struct QueuedEventLink : EventLink<_AnswerType, _ArgumentType, _NListeners> {
 
 };
 
-template <typename _AnswerType, typename _ArgumentType, int _NListeners, typename _QueueSlotsType>
-struct QueuedClassEventLink {
-
-	// answers
-	struct AnswerfullEvent {
-		_AnswerType*    answerObjectReference;
-		_ArgumentType   eventParameter;
-		mutex           answerMutex;
-
-		AnswerfullEvent() {}
-	};
-
-	// debug info
-	string eventName;
-
-	// consumers
-	void (*answerlessConsumerProcedureReference) (void*, const _ArgumentType&);
-	void (*answerfullConsumerProcedureReference) (void*, const _ArgumentType&, _AnswerType*, std::mutex&);
-	void* answerlessConsumerThis;
-	void* answerfullConsumerThis;
-
-	// listeners
-	void (*listenerProcedureReferences[_NListeners]) (void*, const _ArgumentType&);
-	void* listenersThis[_NListeners];
-	int nListenerProcedureReferences;
-
-	// events buffer
-	AnswerfullEvent events[(size_t)std::numeric_limits<_QueueSlotsType>::max()+(size_t)1];
-
-	// events queues
-	NonBlockingNonReentrantPointerQueue<AnswerfullEvent, _QueueSlotsType> toBeConsumedEvents;
-
-	bool            reservations[(size_t)std::numeric_limits<_QueueSlotsType>::max()+(size_t)1];
-	_QueueSlotsType eventIdSequence;
-
-	// mutexes
-	mutex  reservationGuard;
-	mutex* fullGuard;
-	mutex  enqueueGuard;
-	mutex  dequeueGuard;
-	mutex* emptyGuard;
-
-
-	QueuedClassEventLink(string eventName)
-			: eventName(eventName)
-			, answerlessConsumerProcedureReference(nullptr)
-			, answerfullConsumerProcedureReference(nullptr)
-			, answerlessConsumerThis(nullptr)
-			, answerfullConsumerThis(nullptr)
-			, listenerProcedureReferences{nullptr}
-			, listenersThis{nullptr}
-			, nListenerProcedureReferences(0)
-			, reservations{false}
-			, eventIdSequence(0)
-			, fullGuard(nullptr)
-			, emptyGuard(nullptr) {}
-
-	template <typename _Class> void setAnswerlessConsumer(void (_Class::*consumerProcedureReference) (const _ArgumentType&), _Class* consumerThis) {
-		answerlessConsumerProcedureReference = reinterpret_cast<void (*) (void*, const _ArgumentType&)>(consumerProcedureReference);
-		answerlessConsumerThis               = consumerThis;
-	}
-
-	template <typename _Class> void setAnswerfullConsumer(void (_Class::*consumerProcedureReference) (const _ArgumentType&, _AnswerType*, std::mutex&), _Class* consumerThis) {
-		answerfullConsumerProcedureReference = reinterpret_cast<void (*) (void*, const _ArgumentType&, _AnswerType*, std::mutex&)>(consumerProcedureReference);;
-		answerfullConsumerThis               = consumerThis;
-	}
-
-	template <typename _Class> void addListener(void (_Class::*listenerProcedureReference) (const _ArgumentType&), _Class* listenerThis) {
-		if (nListenerProcedureReferences >= _NListeners) {
-			THROW_EXCEPTION(overflow_error, "Out of listener slots (max="+to_string(_NListeners)+") while attempting to add a new event listener to '" + eventName + "' " +
-			                                "(you may wish to increase '_NListeners' at '" + eventName + "'s declaration)");
-		}
-		listenerProcedureReferences[nListenerProcedureReferences] = reinterpret_cast<void (*) (void*, const _ArgumentType&)>(listenerProcedureReference);
-		              listenersThis[nListenerProcedureReferences] = listenerThis;
-		nListenerProcedureReferences++;
-	}
-
-	int findListener(void(&&listenerProcedureReference)(void*, const _ArgumentType&)) {
-		for (int i=0; i<nListenerProcedureReferences; i++) {
-			if (listenerProcedureReferences[i] == listenerProcedureReference) {
-				return i;
-			}
-		}
-		return -1;
-	}
-
-	bool removeListener(void (&&listenerProcedureReference) (void*, const _ArgumentType&)) {
-		int pos = findListener(listenerProcedureReference);
-		if (pos == -1) {
-			return false;
-		}
-		memcpy(&(listenerProcedureReferences[pos]), &(listenerProcedureReferences[pos+1]), (nListenerProcedureReferences - (pos+1)) * sizeof(listenerProcedureReferences[0]));
-		memcpy(              &(listenersThis[pos]),               &(listenersThis[pos+1]), (nListenerProcedureReferences - (pos+1)) * sizeof(listenersThis[0]));
-		nListenerProcedureReferences--;
-		listenerProcedureReferences[nListenerProcedureReferences] = nullptr;
-		              listenersThis[nListenerProcedureReferences] = nullptr;
-		return true;
-	}
-
-	inline void notifyEventListeners(const _ArgumentType& eventParameter) {
-		for (int i=0; i<nListenerProcedureReferences; i++) {
-			listenerProcedureReferences[i](listenersThis[i], eventParameter);
-		}
-	}
-
-	inline void consume(AnswerfullEvent* event) {
-		if (event->answerObjectReference != nullptr) {
-			answerfullConsumerProcedureReference(answerfullConsumerThis, event->eventParameter, event->answerObjectReference, event->answerMutex);
-		} else {
-			answerlessConsumerProcedureReference(answerlessConsumerThis, event->eventParameter);
-		}
-	}
-
-	/** Reserves an 'eventId' (and returns it) for further enqueueing.
-	 *  Points 'eventParameterPointer' to a location able to be filled with the event information.
-	 *  Returns -1 is an event cannot be reserved. */
-	inline int reserveEventForReporting(_ArgumentType*& eventParameterPointer, _AnswerType* answerObjectReference) {
-
-		// find a free event slot 'eventId'
-		_QueueSlotsType eventId;
-		_QueueSlotsType counter = -1;
-		do {
-			eventId = eventIdSequence++;
-			counter--;
-		} while ( (reservations[eventId] != false) && (counter != 0));
-		// events buffer are full?
-		if (counter == 0) {
-			return -1;
-		}
-
-		// prepare the event slot and return the event id
-		reservations[eventId]              = true;
-		AnswerfullEvent& futureEvent       = events[eventId];
-		eventParameterPointer              = &futureEvent.eventParameter;
-		futureEvent.answerObjectReference  = answerObjectReference;
-		// prepare to wait for the answer
-		if (answerObjectReference != nullptr) {
-			futureEvent.answerMutex.try_lock();
-		}
-		return eventId;
-	}
-
-	inline int reserveEventForReporting(_ArgumentType*& eventParameter) {
-		return reserveEventForReporting(eventParameter, nullptr);
-	}
-
-	inline int reentrantlyReserveEventForReporting(_ArgumentType*& eventParameterPointer, _AnswerType* answerObjectReference) {
-
-		// find a free event slot 'eventId'
-		_QueueSlotsType eventId;
-		_QueueSlotsType counter = 0;
-		reservationGuard.lock();
-		do {
-			eventId = eventIdSequence++;
-			counter--;
-			// slots are full -- wait until 'reentrantlyReleaseSlot(...)' unlocks 'fullGuard'
-			if (counter == 0) {
-				fullGuard = &reservationGuard;
-				reservationGuard.lock();
-			}
-		} while (reservations[eventId] != false);
-		reservationGuard.unlock();
-
-		// prepare the event slot and return the event id
-		reservations[eventId]              = true;
-		AnswerfullEvent& futureEvent       = events[eventId];
-		eventParameterPointer              = &futureEvent.eventParameter;
-		futureEvent.answerObjectReference  = answerObjectReference;
-		// prepare to wait for the answer
-		if (answerObjectReference != nullptr) {
-			futureEvent.answerMutex.try_lock();
-		}
-		return eventId;
-	}
-
-	inline int reentrantlyReserveEventForReporting(_ArgumentType*& eventParameter) {
-		return reentrantlyReserveEventForReporting(eventParameter, nullptr);
-	}
-
-	inline void reportReservedEvent(_QueueSlotsType eventId) {
-		toBeConsumedEvents.enqueue(events[eventId]);
-		mutex* guard = emptyGuard;
-		emptyGuard = nullptr;
-		if (guard) {
-			guard->unlock();
-		}
-	}
-
-	inline void reentrantlyReportReservedEvent(_QueueSlotsType eventId) {
-		enqueueGuard.lock();
-		toBeConsumedEvents.enqueue(events[eventId]);
-		if (emptyGuard) {
-			mutex* guard = emptyGuard;
-			emptyGuard = nullptr;
-			guard->unlock();
-		}
-		enqueueGuard.unlock();
-	}
-
-	inline bool dequeue(AnswerfullEvent*& dequeuedElementPointer) {
-		return toBeConsumedEvents.dequeue(dequeuedElementPointer);
-	}
-
-	inline AnswerfullEvent* reentrantlyDequeue(AnswerfullEvent*& dequeuedElementPointer) {
-		dequeueGuard.lock();
-		while (true) {
-			bool hadElement = toBeConsumedEvents.dequeue(dequeuedElementPointer);
-			if (hadElement) {
-				break;
-			} else {
-				// queue is empty -- wait until 'reentrantlyReportReservedEvent(...)' unlocks 'emptyGuard'
-				emptyGuard = &dequeueGuard;
-				dequeueGuard.lock();
-			}
-		}
-		dequeueGuard.unlock();
-		return dequeuedElementPointer;
-	}
-
-	inline _QueueSlotsType releaseSlot(AnswerfullEvent*& dequeuedElementPointer) {
-		_QueueSlotsType eventId = (dequeuedElementPointer - events);
-		reservations[eventId] = false;
-		return eventId;
-	}
-
-	inline _QueueSlotsType reentrantlyReleaseSlot(AnswerfullEvent*& dequeuedElementPointer) {
-		_QueueSlotsType eventId = (dequeuedElementPointer - events);
-		reservations[eventId] = false;
-		if (fullGuard) {
-			mutex* guard = fullGuard;
-			fullGuard = nullptr;
-			guard->unlock();
-		}
-		return eventId;
-	}
-
-	inline _AnswerType* waitForAnswer(_QueueSlotsType eventId) {
-		AnswerfullEvent& event = events[eventId];
-		if (event.answerObjectReference == nullptr) {
-			THROW_EXCEPTION(runtime_error, "Attempting to wait for an answer from an event of '" + this->eventName + "', which was not prepared to produce an answer. "
-		                                   "Did you call 'reserveEventForReporting(_ArgumentType)' instead of 'reserveEventForReporting(_ArgumentType&, const _AnswerType&)' ?");
-		}
-		event.answerMutex.lock();
-		event.answerMutex.unlock();
-		return event.answerObjectReference;
-	}
-
-};
-
-template <class _QueuedEventLink>
-struct QueueEventDispatcher {
-
-	bool              active;
-	_QueuedEventLink& el;
-	int               nThreads;
-	thread*           threads;
-
-	QueueEventDispatcher(_QueuedEventLink& el, int nThreads)
-			: active(true)
-			, el(el)
-			, nThreads(nThreads) {
-		threads = new thread[nThreads];
-		for (int i=0; i<nThreads; i++) {
-			//cerr << "creating consumer thread #" << i << endl << flush;
-			threads[i] = thread(&QueueEventDispatcher::dispatchLoop, this);
-			//this_thread::sleep_for(chrono::milliseconds(300));
-		}
-	}
-
-	~QueueEventDispatcher() {
-		stopASAP();
-		delete[] threads;
-	}
-
-	void stopASAP() {
-		if (active) {
-			for (int i=0; i<nThreads; i++) {
-				threads[i].detach();
-			}
-			active = false;
-		}
-	}
-
-	void dispatchLoop() {
-		typename _QueuedEventLink::AnswerfullEvent* dequeuedEvent;
-		while (active) {
-			el.reentrantlyDequeue(dequeuedEvent);
-			el.consume(dequeuedEvent);
-			el.notifyEventListeners(dequeuedEvent->eventParameter);
-			// release event slot
-			el.reentrantlyReleaseSlot(dequeuedEvent);
-		}
-	}
-
-};
-
-
 struct EventLinkSuiteObjects {
 
     // test case constants
@@ -864,7 +567,7 @@ void _myShits(const double& p, int* answer, std::mutex& answerMutex) { cerr << "
 void _myListener(const double& p) { cerr << "(listening p=" << p << "); ";}
 void _myShits(const float& p)  { cerr << "my float*  shits with p is " << p << endl;}
 BOOST_AUTO_TEST_CASE(apiUsageTest) {
-	EventFramework<int, MyEvents> myab({
+/*	EventFramework<int, MyEvents> myab({
 		[(int)MyEvents::EventA]=EventDefinition<int>(_myIShits),
 		[(int)MyEvents::EventB]=EventDefinition<int>(_myIShits),
 		[(int)MyEvents::EventC]=EventDefinition<int>(_myIShits)});
@@ -911,7 +614,7 @@ cerr << "||eventId is " << eventId << "||" << flush;
 	this_thread::sleep_for(chrono::milliseconds(3000));
 	dShits.stopASAP();
 	cerr << "Queued Output is " << *qShits.waitForAnswer(eventId) << endl;
-}
+*/}
 
 //BOOST_AUTO_TEST_CASE(apiUsageTest) {
 //}
@@ -1027,7 +730,7 @@ string QueueEventLinkSuiteObjects::testOutput = "";
 BOOST_FIXTURE_TEST_SUITE(QueueEventLinkSuite, QueueEventLinkSuiteObjects);
 
 BOOST_AUTO_TEST_CASE(waitForAConsumableEvent) {
-	HEAP_MARK();
+/*	HEAP_MARK();
 
 	QueuedClassEventLink<unsigned int, unsigned int, 10, uint_fast8_t> qShits("waitForAConsumableEvent");
 	QueueEventDispatcher dShits(qShits, 1);
@@ -1062,7 +765,7 @@ BOOST_AUTO_TEST_CASE(waitForAConsumableEvent) {
 	BOOST_TEST(          notifyedEvents[1] == 1023, "Event notification");
 
 	HEAP_TRACE("waitForAConsumableEvent", output);
-}
+*/}
 
 BOOST_AUTO_TEST_CASE(alternativelyWaitForAConsumableEvent) {
 	HEAP_MARK();
