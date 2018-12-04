@@ -767,6 +767,73 @@ BOOST_AUTO_TEST_CASE(waitForAConsumableEvent) {
 	HEAP_TRACE("waitForAConsumableEvent", output);
 */}
 
+BOOST_AUTO_TEST_CASE(testAvailableQueueSlots) {
+	HEAP_MARK();
+
+	mutua::events::QueueEventLink<unsigned int, unsigned int, 10, 8> queue256("256 slots queue");
+	mutua::events::QueueEventLink<unsigned int, unsigned int, 10, 7> queue128("128 slots queue");
+	mutua::events::QueueEventLink<unsigned int, unsigned int, 10, 6> queue64 ( "64 slots queue");
+	mutua::events::QueueEventLink<unsigned int, unsigned int, 10, 5> queue32 ( "32 slots queue");
+	mutua::events::QueueEventLink<unsigned int, unsigned int, 10, 4> queue16 ( "16 slots queue");
+	mutua::events::QueueEventLink<unsigned int, unsigned int, 10, 3> queue8  (  "8 slots queue");
+	mutua::events::QueueEventLink<unsigned int, unsigned int, 10, 2> queue4  (  "4 slots queue");
+	mutua::events::QueueEventLink<unsigned int, unsigned int, 10, 1> queue2  (  "2 slots queue");
+
+	output("Testing that we may fill all available queue slots before consuming any event\n");
+	output("(if this test blocks on a deadlock, you may consider this test as having failed)\n");
+
+	// test lengths one by one, until queue is full
+	output("Length tests: \n");
+
+#define testQueue(_numberOfSlots)                                                        \
+	output("\t" + queue##_numberOfSlots.eventName + ": ");                               \
+	for (int i=1; i<=_numberOfSlots; i++) {                                              \
+		unsigned int* element;                                                           \
+		unsigned int eventId = queue##_numberOfSlots.reserveEventForReporting(element);  \
+		*element = i;                                                                    \
+		queue##_numberOfSlots.reportReservedEvent(eventId);                              \
+		output(".");                                                                     \
+	}                                                                                    \
+	output("\n");                                                                        \
+
+	testQueue(256);
+	testQueue(128);
+	testQueue(64);
+	testQueue(32);
+	testQueue(16);
+	testQueue(8);
+	testQueue(4);
+	testQueue(2);
+
+#undef testQueue
+
+	HEAP_TRACE("testAvailableQueueSlots", output);
+}
+
+
+BOOST_AUTO_TEST_CASE(testQueueLengthAndQueueReservedLength) {
+	HEAP_MARK();
+
+	mutua::events::QueueEventLink<unsigned int, unsigned int, 10, 8> queue("testQueueLengthAndQueueReservedLength");
+
+	BOOST_TEST(queue.getQueueLength() == 0,         "Initial queue length isn't zero");
+	BOOST_TEST(queue.getQueueReservedLength() == 0, "Initial queue reserved length isn't zero");
+
+	// test lengths one by one, until queue is full
+	output("Length tests: ");
+	for (int i=1; i<=256; i++) {
+		unsigned int* element;
+		unsigned int eventId = queue.reserveEventForReporting(element);
+		*element = i;
+		queue.reportReservedEvent(eventId);
+		output(".");
+		BOOST_TEST(queue.getQueueLength() == i,         "Queue length isn't "          + to_string(i));
+		BOOST_TEST(queue.getQueueReservedLength() == i, "Queue reserved length isn't " + to_string(i));
+	}
+
+	HEAP_TRACE("testQueueLengthAndQueueReservedLength", output);
+}
+
 BOOST_AUTO_TEST_CASE(alternativelyWaitForAConsumableEvent) {
 	HEAP_MARK();
 
