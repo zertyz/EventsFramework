@@ -128,6 +128,7 @@ namespace mutua::events {
 			return isLocked;
 		}
 
+		/** Cause all threads not to process any further elements from this point on */
 		void stopASAP() {
 			if (isActive) {
 				for (int i=0; i<nThreads; i++) {
@@ -135,6 +136,14 @@ namespace mutua::events {
 				}
 				isActive = false;
 			}
+		}
+
+		/** Wait until queue is empty to stop all threads */
+		void stopWhenEmpty() {
+			while (el.getQueueLength()) {
+				this_thread::sleep_for(chrono::milliseconds(1));
+			}
+			stopASAP();
 		}
 
 		inline void consumeAnswerlessEvent(
@@ -314,7 +323,7 @@ namespace mutua::events {
 				if (!isQueueGuardLocked)       el.queueGuard.unlock();
 				if (!isDequeueGuardLocked)     el.dequeueGuard.unlock();
 
-				cerr << "\nQueueEventDispatcher('" << el.eventName << "'): rHead=" << el.queueReservedHead << "; rTail=" << el.queueReservedTail << "; reservedLength: " << el.getQueueReservedLength() << "; ((queueReservedTail+1) & " << el.queueSlotsModulus << ")=" << ((el.queueReservedTail+1) & el.queueSlotsModulus) << "; reservations[queueReservedHead]=" << el.events[el.queueReservedHead].reserved << "; isReservationGuardLocked=" << isReservationGuardLocked << "; isFullGuardNotNull=" << isFullGuardNotNull << "; isQueueGuardLocked=" << isQueueGuardLocked << "; isDequeueGuardLocked=" << isDequeueGuardLocked << "; isEmptyGuardNotNull=" << isEmptyGuardNotNull << endl << flush;
+				cerr << "\nQueueEventDispatcher('" << el.eventName << "'): rHead=" << el.queueReservedHead << "; rTail=" << el.queueReservedTail << "; reservedLength: " << el.getQueueReservedLength() << " | qHead=" << el.queueHead << "; qTail=" << el.queueTail << "; queueLength: " << el.getQueueLength() << " | isReservationGuardLocked=" << isReservationGuardLocked << "; isFullGuardNotNull=" << isFullGuardNotNull << "; isQueueGuardLocked=" << isQueueGuardLocked << "; isDequeueGuardLocked=" << isDequeueGuardLocked << "; isEmptyGuardNotNull=" << isEmptyGuardNotNull << endl << flush;
 				this_thread::sleep_for(chrono::milliseconds(1000));
 			}
 		}

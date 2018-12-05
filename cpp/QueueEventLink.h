@@ -37,8 +37,8 @@ namespace mutua::events {
             exception_ptr   exception;
             bool            answered;
             bool            listened;
-            // queue synchronization
-            bool            reserved;		// keeps track of the conceded but not yet enqueued & conceded but not yet dequeued positions
+            // reserved queue vs completed queue synchronization
+            bool            reserved;		// keeps track of the conceded but not yet enqueued & conceded but not yet dequeued slots
 
             QueueElement()
             		: answerObjectReference(nullptr)
@@ -82,19 +82,25 @@ namespace mutua::events {
 
         QueueEventLink(string eventName)
                 : eventName                            (eventName)
+        		, answerlessConsumerProcedureReference (nullptr)
                 , answerlessConsumerThese              (nullptr)
 				, nAnswerlessConsumerThese             (0)
+        		, answerfullConsumerProcedureReference (nullptr)
                 , answerfullConsumerThese              (nullptr)
 				, nAnswerfullConsumerThese             (0)
                 , listenerProcedureReferences          {nullptr}
                 , listenersThis                        {nullptr}
                 , nListenerProcedureReferences         (0)
                 , fullGuard                            (nullptr)
-                , emptyGuard                           (nullptr)
                 , queueHead                            (0)
                 , queueTail                            (0)
                 , queueReservedHead                    (0)
-                , queueReservedTail                    (0) {}
+                , queueReservedTail                    (0) {
+
+            // queue starts empty & locked for dequeueing
+			dequeueGuard.lock();
+			emptyGuard = &dequeueGuard;
+		}
 
         ~QueueEventLink() {
         	unsetConsumer();
@@ -190,7 +196,14 @@ namespace mutua::events {
 
         /** Queue length, differently than the queue size, is the number of elements currently waiting to be dequeued */
         unsigned int getQueueLength() {
-        	if (queueTail >= queueHead) {
+        	if (queueTail == queueHead) {
+        		if (fullGuard) {
+        			return numberOfQueueSlots;
+        		} else {
+        			return 0;
+        		}
+        	}
+        	if (queueTail > queueHead) {
         		return queueTail - queueHead;
         	} else {
         		return (numberOfQueueSlots + queueTail) - queueHead;
@@ -199,7 +212,14 @@ namespace mutua::events {
 
         /** Returns the number of slots that are currently holding a dequeuable element + the ones that are currently compromised into holding one of those */
         unsigned int getQueueReservedLength() {
-        	if (queueReservedTail >= queueReservedHead) {
+        	if (queueReservedTail == queueReservedHead) {
+        		if (fullGuard) {
+        			return numberOfQueueSlots;
+        		} else {
+        			return 0;
+        		}
+        	}
+        	if (queueReservedTail > queueReservedHead) {
         		return queueReservedTail - queueReservedHead;
         	} else {
         		return (numberOfQueueSlots + queueReservedTail) - queueReservedHead;
@@ -210,30 +230,32 @@ namespace mutua::events {
          *  Points 'eventParameterPointer' to a location able to be filled with the event information.
          *  This method takes constant time but blocks if the queue is full. */
         inline unsigned int reserveEventForReporting(_ArgumentType*& eventParameterPointer) {
-		FULL_QUEUE_RETRY:
-			// reserve a queue slot
+
+        FULL_QUEUE_RETRY:
+
 			queueGuard.lock();
-			if (((queueReservedTail+1) & queueSlotsModulus) == queueReservedHead) {
-				if ( events[queueReservedHead].reserved || (queueReservedHead == queueHead) ) {
-					// queue is full. Wait
-					if (fullGuard == nullptr) {
-						reservationGuard.lock();
-						fullGuard = &reservationGuard;
-					}
-					queueGuard.unlock();
-					reservationGuard.lock();
-					reservationGuard.unlock();
-					goto FULL_QUEUE_RETRY;
-				} else {
-					queueReservedHead = (queueReservedHead+1) & queueSlotsModulus;
-				}
+
+			// is queue full?
+			if ( (queueReservedTail == queueReservedHead) && fullGuard ) {
+				// Queue was already full before the call to this method. Wait on the mutex
+				queueGuard.unlock();
+				reservationGuard.lock();	// 2nd lock. Any caller will wait here. Unlocked only by 'releaseEvent(...)'
+				reservationGuard.unlock();
+				goto FULL_QUEUE_RETRY;
 			}
+
 			unsigned int eventId = queueReservedTail;
 			queueReservedTail = (queueReservedTail+1) & queueSlotsModulus;
 
-			// prepare the event slot and return the event id
+			// will adding this element make the queue full? Set the waiting mutex
+			if (queueReservedTail == queueReservedHead) {
+				reservationGuard.lock();		// 1st lock. Won't wait yet.
+				fullGuard = &reservationGuard;	// 'fullGuard' only points to 'reservationGuard'
+			}
+
+            // prepare the event slot and return the event id
             QueueElement& futureEvent         = events[eventId];
-			eventParameterPointer             = &futureEvent.eventParameter;
+            eventParameterPointer             = &futureEvent.eventParameter;
             futureEvent.reserved              = true;
 
 			queueGuard.unlock();
@@ -263,10 +285,12 @@ namespace mutua::events {
         	queueGuard.lock();
         	events[eventId].reserved = false;
             if (eventId == queueTail) {
-                queueTail = (queueTail+1) & queueSlotsModulus;
+            	do {
+            		queueTail = (queueTail+1) & queueSlotsModulus;
+            	} while ( (queueTail != queueReservedTail) && (!events[queueTail].reserved) );
                 if (emptyGuard) {
-                	emptyGuard->unlock();
                 	emptyGuard = nullptr;
+                	dequeueGuard.unlock();	// 'emptyGuard' only points to 'dequeueGuard'
                 }
             }
 			queueGuard.unlock();
@@ -276,28 +300,30 @@ namespace mutua::events {
          *  Points 'dequeuedElementPointer' to the queue location containing the event ready to be consumed & notified, returning the 'eventId'.
          *  This method takes constant time but blocks if the queue is empty. */
         inline unsigned int reserveEventForDispatching(QueueElement*& dequeuedElementPointer) {
+
          EMPTY_QUEUE_RETRY:
-            // dequeue but don't release the slot yet
+
 			queueGuard.lock();
-            if (queueHead == queueTail) {
-                if ( events[queueTail].reserved || (queueTail == queueReservedTail) ) {
-                    // queue is empty -- wait until 'reentrantlyReportReservedEvent(...)' unlocks 'emptyGuard'
-					if (emptyGuard == nullptr) {
-						dequeueGuard.lock();
-						emptyGuard = &dequeueGuard;
-					}
-                	queueGuard.unlock();
-                    dequeueGuard.lock();
-                    dequeueGuard.unlock();
-                    goto EMPTY_QUEUE_RETRY;
-                } else {
-                    queueTail = (queueTail+1) & queueSlotsModulus;
-                }
+
+			// is queue empty?
+            if ( (queueHead == queueTail) && emptyGuard ) {
+            	// Queue was already empty before the call to this method. Wait on the mutex
+            	queueGuard.unlock();
+            	dequeueGuard.lock();	// 2nd lock. Any caller will wait here. Unlocked only by 'reportReservedEvent(...)'
+            	dequeueGuard.unlock();
+            	goto EMPTY_QUEUE_RETRY;
             }
+
             unsigned int eventId = queueHead;
             queueHead = (queueHead+1) & queueSlotsModulus;
 
-            dequeuedElementPointer           = &events[eventId];
+            // will dequeueing this element make the queue empty? Set the waiting mutex
+            if (queueHead == queueTail) {
+            	dequeueGuard.lock();		// 1st lock. Won't wait yet.
+            	emptyGuard = &dequeueGuard;	// 'emptyGuard' only points to 'dequeueGuard'
+            }
+
+            dequeuedElementPointer = &events[eventId];
             dequeuedElementPointer->reserved = true;
 
             queueGuard.unlock();
@@ -314,10 +340,12 @@ namespace mutua::events {
         	queueGuard.lock();
         	events[eventId].reserved = false;
             if (eventId == queueReservedHead) {
-                queueReservedHead = (queueReservedHead+1) & queueSlotsModulus;
+            	do {
+            		queueReservedHead = (queueReservedHead+1) & queueSlotsModulus;
+            	} while ( (queueReservedHead != queueHead) && (!events[queueReservedHead].reserved) );
                 if (fullGuard) {
-                	fullGuard->unlock();
                 	fullGuard = nullptr;
+                	reservationGuard.unlock();
                 }
             }
 			queueGuard.unlock();

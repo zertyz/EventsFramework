@@ -670,9 +670,12 @@ struct QueueEventLinkSuiteObjects {
     	answerfullyConsumedEvents[n]++;
 	}
 	unsigned int answerlessConsumedEvents[65536];
+	mutex m;
 	inline void _answerlessEventConsumer(const unsigned int& n) {
+		//m.lock();
     	answerlessConsumedEvents[n]++;
-    	//if (n%10 == 0) this_thread::sleep_for(chrono::milliseconds(1));
+    	//m.unlock();
+    	///*if (n%10 == 0)*/ this_thread::sleep_for(chrono::milliseconds(1));
 		//cerr << n << ((n%26 == 0) ? ",\n" : ",") << flush;
 	}
 	unsigned int notifyedEvents[65536];
@@ -729,55 +732,17 @@ string QueueEventLinkSuiteObjects::testOutput = "";
 
 BOOST_FIXTURE_TEST_SUITE(QueueEventLinkSuite, QueueEventLinkSuiteObjects);
 
-BOOST_AUTO_TEST_CASE(waitForAConsumableEvent) {
-/*	HEAP_MARK();
-
-	QueuedClassEventLink<unsigned int, unsigned int, 10, uint_fast8_t> qShits("waitForAConsumableEvent");
-	QueueEventDispatcher dShits(qShits, 1);
-
-	qShits.addListener(&QueueEventLinkSuiteObjects::_eventListener1,   (QueueEventLinkSuiteObjects*)this);
-	qShits.addListener(&QueueEventLinkSuiteObjects::_eventListener2,   (QueueEventLinkSuiteObjects*)this);
-	qShits.addListener(&QueueEventLinkSuiteObjects::_eventListener4,   (QueueEventLinkSuiteObjects*)this);
-	qShits.addListener(&QueueEventLinkSuiteObjects::_eventListener8,   (QueueEventLinkSuiteObjects*)this);
-	qShits.addListener(&QueueEventLinkSuiteObjects::_eventListener16,  (QueueEventLinkSuiteObjects*)this);
-	qShits.addListener(&QueueEventLinkSuiteObjects::_eventListener32,  (QueueEventLinkSuiteObjects*)this);
-	qShits.addListener(&QueueEventLinkSuiteObjects::_eventListener64,  (QueueEventLinkSuiteObjects*)this);
-	qShits.addListener(&QueueEventLinkSuiteObjects::_eventListener128, (QueueEventLinkSuiteObjects*)this);
-	qShits.addListener(&QueueEventLinkSuiteObjects::_eventListener256, (QueueEventLinkSuiteObjects*)this);
-	qShits.addListener(&QueueEventLinkSuiteObjects::_eventListener512, (QueueEventLinkSuiteObjects*)this);
-
-	qShits.setAnswerlessConsumer(&QueueEventLinkSuiteObjects::_answerlessEventConsumer, (QueueEventLinkSuiteObjects*)this);
-
-	this_thread::sleep_for(chrono::milliseconds(300));
-
-	BOOST_TEST(answerlessConsumedEvents[1] == 0, "Waiting for event consumption");
-	BOOST_TEST(          notifyedEvents[1] == 0, "Waiting for event notification");
-
-	unsigned int* reservedParameterReference;
-	unsigned int eventId = qShits.reserveEventForReporting(reservedParameterReference);
-	*reservedParameterReference = 1;
-	qShits.reportReservedEvent(eventId);
-	dShits.stopASAP();
-
-	this_thread::sleep_for(chrono::milliseconds(10));
-
-	BOOST_TEST(answerlessConsumedEvents[1] == 1,    "Event consumption");
-	BOOST_TEST(          notifyedEvents[1] == 1023, "Event notification");
-
-	HEAP_TRACE("waitForAConsumableEvent", output);
-*/}
-
 BOOST_AUTO_TEST_CASE(testAvailableQueueSlots) {
 	HEAP_MARK();
 
 	mutua::events::QueueEventLink<unsigned int, unsigned int, 10, 8> queue256("256 slots queue");
 	mutua::events::QueueEventLink<unsigned int, unsigned int, 10, 7> queue128("128 slots queue");
-	mutua::events::QueueEventLink<unsigned int, unsigned int, 10, 6> queue64 ( "64 slots queue");
-	mutua::events::QueueEventLink<unsigned int, unsigned int, 10, 5> queue32 ( "32 slots queue");
-	mutua::events::QueueEventLink<unsigned int, unsigned int, 10, 4> queue16 ( "16 slots queue");
-	mutua::events::QueueEventLink<unsigned int, unsigned int, 10, 3> queue8  (  "8 slots queue");
-	mutua::events::QueueEventLink<unsigned int, unsigned int, 10, 2> queue4  (  "4 slots queue");
-	mutua::events::QueueEventLink<unsigned int, unsigned int, 10, 1> queue2  (  "2 slots queue");
+	mutua::events::QueueEventLink<unsigned int, unsigned int, 10, 6> queue64 (" 64 slots queue");
+	mutua::events::QueueEventLink<unsigned int, unsigned int, 10, 5> queue32 (" 32 slots queue");
+	mutua::events::QueueEventLink<unsigned int, unsigned int, 10, 4> queue16 (" 16 slots queue");
+	mutua::events::QueueEventLink<unsigned int, unsigned int, 10, 3> queue8  ("  8 slots queue");
+	mutua::events::QueueEventLink<unsigned int, unsigned int, 10, 2> queue4  ("  4 slots queue");
+	mutua::events::QueueEventLink<unsigned int, unsigned int, 10, 1> queue2  ("  2 slots queue");
 
 	output("Testing that we may fill all available queue slots before consuming any event\n");
 	output("(if this test blocks on a deadlock, you may consider this test as having failed)\n");
@@ -785,8 +750,25 @@ BOOST_AUTO_TEST_CASE(testAvailableQueueSlots) {
 	// test lengths one by one, until queue is full
 	output("Length tests: \n");
 
-#define testQueue(_numberOfSlots)                                                        \
-	output("\t" + queue##_numberOfSlots.eventName + ": ");                               \
+	// macros
+	/////////
+
+#define testReserveThenReport(_numberOfSlots)                                            \
+	output("\t" + queue##_numberOfSlots.eventName + " -- (r)eserve, then (R)eport: ");   \
+	for (int i=1; i<=_numberOfSlots; i++) {                                              \
+		unsigned int* element;                                                           \
+		unsigned int eventId = queue##_numberOfSlots.reserveEventForReporting(element);  \
+		*element = i;                                                                    \
+		output("r");                                                                     \
+	}                                                                                    \
+	for (int eventId=0; eventId<_numberOfSlots; eventId++) {                             \
+		queue##_numberOfSlots.reportReservedEvent(eventId);                              \
+		output("R");                                                                     \
+	}                                                                                    \
+	output("\n");                                                                        \
+
+#define testFullEnqueueing(_numberOfSlots)                                               \
+	output("\t" + queue##_numberOfSlots.eventName + " (full enqueueing procress): ");    \
 	for (int i=1; i<=_numberOfSlots; i++) {                                              \
 		unsigned int* element;                                                           \
 		unsigned int eventId = queue##_numberOfSlots.reserveEventForReporting(element);  \
@@ -796,16 +778,73 @@ BOOST_AUTO_TEST_CASE(testAvailableQueueSlots) {
 	}                                                                                    \
 	output("\n");                                                                        \
 
-	testQueue(256);
-	testQueue(128);
-	testQueue(64);
-	testQueue(32);
-	testQueue(16);
-	testQueue(8);
-	testQueue(4);
-	testQueue(2);
+#define consumeEvents(_numberOfSlots)                                                                          \
+	output("\t" + queue##_numberOfSlots.eventName + " -- reserveEventFor(D)ispatching, then release(E)vent: ");\
+	for (int i=0; i<_numberOfSlots; i++) {                                                                     \
+		decltype(queue##_numberOfSlots)::QueueElement* queueElement;                                           \
+		unsigned int eId;                                                                                      \
+		eId = queue##_numberOfSlots.reserveEventForDispatching(queueElement);                                  \
+		output("D");                                                                                           \
+		queue##_numberOfSlots.releaseEvent(eId);                                                               \
+		output("E");                                                                                           \
+	}                                                                                                          \
+	output("\n");                                                                                              \
 
-#undef testQueue
+
+	// uncomment in case of deadlock
+//	thread([&] {
+//		for (int i=0; i<2; i++) {
+//			bool isReservationGuardLocked = !queue256.reservationGuard.try_lock();
+//			bool isFullGuardNotNull       =  queue256.fullGuard != nullptr;
+//			bool isQueueGuardLocked       = !queue256.queueGuard.try_lock();
+//			bool isDequeueGuardLocked     = !queue256.dequeueGuard.try_lock();
+//			bool isEmptyGuardNotNull      =  queue256.emptyGuard != nullptr;
+//			if (!isReservationGuardLocked)   queue256.reservationGuard.unlock();
+//			if (!isQueueGuardLocked)         queue256.queueGuard.unlock();
+//			if (!isDequeueGuardLocked)       queue256.dequeueGuard.unlock();
+//			cerr << "\nQueueEventDispatcher('" << queue256.eventName << "'): rHead=" << queue256.queueReservedHead << "; rTail=" << queue256.queueReservedTail << "; reservedLength: " << queue256.getQueueReservedLength() << "; ((queueReservedTail+1) & " << queue256.queueSlotsModulus << ")=" << ((queue256.queueReservedTail+1) & queue256.queueSlotsModulus) << "; reservations[queueReservedHead]=" << queue256.events[queue256.queueReservedHead].reserved << "; isReservationGuardLocked=" << isReservationGuardLocked << "; isFullGuardNotNull=" << isFullGuardNotNull << "; isQueueGuardLocked=" << isQueueGuardLocked << "; isDequeueGuardLocked=" << isDequeueGuardLocked << "; isEmptyGuardNotNull=" << isEmptyGuardNotNull << endl << flush;
+//			this_thread::sleep_for(chrono::milliseconds(1000));
+//		}
+//	}).detach();
+//	this_thread::sleep_for(chrono::milliseconds(300));
+
+	testReserveThenReport(2);
+	testReserveThenReport(4);
+	testReserveThenReport(8);
+	testReserveThenReport(16);
+	testReserveThenReport(32);
+	testReserveThenReport(64);
+	testReserveThenReport(128);
+	testReserveThenReport(256);
+	consumeEvents(2);
+	consumeEvents(4);
+	consumeEvents(8);
+	consumeEvents(16);
+	consumeEvents(32);
+	consumeEvents(64);
+	consumeEvents(128);
+	consumeEvents(256);
+
+	testFullEnqueueing(2);
+	testFullEnqueueing(4);
+	testFullEnqueueing(8);
+	testFullEnqueueing(16);
+	testFullEnqueueing(32);
+	testFullEnqueueing(64);
+	testFullEnqueueing(128);
+	testFullEnqueueing(256);
+	consumeEvents(2);
+	consumeEvents(4);
+	consumeEvents(8);
+	consumeEvents(16);
+	consumeEvents(32);
+	consumeEvents(64);
+	consumeEvents(128);
+	consumeEvents(256);
+
+#undef testFullEnqueueing
+#undef testReserveThenReport
+#undef consumeEvents
 
 	HEAP_TRACE("testAvailableQueueSlots", output);
 }
@@ -816,8 +855,8 @@ BOOST_AUTO_TEST_CASE(testQueueLengthAndQueueReservedLength) {
 
 	mutua::events::QueueEventLink<unsigned int, unsigned int, 10, 8> queue("testQueueLengthAndQueueReservedLength");
 
-	BOOST_TEST(queue.getQueueLength() == 0,         "Initial queue length isn't zero");
-	BOOST_TEST(queue.getQueueReservedLength() == 0, "Initial queue reserved length isn't zero");
+	BOOST_TEST(queue.getQueueLength() == 0,         "Initial queue length should be zero");
+	BOOST_TEST(queue.getQueueReservedLength() == 0, "Initial queue reserved length should be zero");
 
 	// test lengths one by one, until queue is full
 	output("Length tests: ");
@@ -827,29 +866,17 @@ BOOST_AUTO_TEST_CASE(testQueueLengthAndQueueReservedLength) {
 		*element = i;
 		queue.reportReservedEvent(eventId);
 		output(".");
-		BOOST_TEST(queue.getQueueLength() == i,         "Queue length isn't "          + to_string(i));
-		BOOST_TEST(queue.getQueueReservedLength() == i, "Queue reserved length isn't " + to_string(i));
+		BOOST_TEST(queue.getQueueLength() == i);
+		BOOST_TEST(queue.getQueueReservedLength() == i);
 	}
 
 	HEAP_TRACE("testQueueLengthAndQueueReservedLength", output);
 }
 
-BOOST_AUTO_TEST_CASE(alternativelyWaitForAConsumableEvent) {
+BOOST_AUTO_TEST_CASE(waitForAConsumableEvent) {
 	HEAP_MARK();
 
-	mutua::events::QueueEventLink<unsigned int, unsigned int, 10, 8> qShits("alternativelyWaitForAConsumableEvent");
-
-	qShits.addListener(&QueueEventLinkSuiteObjects::_eventListener1,   (QueueEventLinkSuiteObjects*)this);
-	qShits.addListener(&QueueEventLinkSuiteObjects::_eventListener2,   (QueueEventLinkSuiteObjects*)this);
-	qShits.addListener(&QueueEventLinkSuiteObjects::_eventListener4,   (QueueEventLinkSuiteObjects*)this);
-	qShits.addListener(&QueueEventLinkSuiteObjects::_eventListener8,   (QueueEventLinkSuiteObjects*)this);
-	qShits.addListener(&QueueEventLinkSuiteObjects::_eventListener16,  (QueueEventLinkSuiteObjects*)this);
-	qShits.addListener(&QueueEventLinkSuiteObjects::_eventListener32,  (QueueEventLinkSuiteObjects*)this);
-	qShits.addListener(&QueueEventLinkSuiteObjects::_eventListener64,  (QueueEventLinkSuiteObjects*)this);
-	qShits.addListener(&QueueEventLinkSuiteObjects::_eventListener128, (QueueEventLinkSuiteObjects*)this);
-	qShits.addListener(&QueueEventLinkSuiteObjects::_eventListener256, (QueueEventLinkSuiteObjects*)this);
-	qShits.addListener(&QueueEventLinkSuiteObjects::_eventListener512, (QueueEventLinkSuiteObjects*)this);
-
+	mutua::events::QueueEventLink<unsigned int, unsigned int, 10, 8> qShits("waitForAConsumableEvent");
 	qShits.setAnswerlessConsumer(&QueueEventLinkSuiteObjects::_answerlessEventConsumer, {(QueueEventLinkSuiteObjects*)this});
 
 	this_thread::sleep_for(chrono::milliseconds(300));
@@ -859,76 +886,30 @@ BOOST_AUTO_TEST_CASE(alternativelyWaitForAConsumableEvent) {
 
 	unsigned int* reservedParameterReference;
 	unsigned int eventId = qShits.reserveEventForReporting(reservedParameterReference);
-	cerr << "Reserved eventId is " << eventId << endl << flush;
 	*reservedParameterReference = 1;
 	qShits.reportReservedEvent(eventId);
-	cerr << "Event was just reported" << endl << flush;
 
-	typename mutua::events::QueueEventLink<unsigned int, unsigned int, 10, 8>::QueueElement* dequeuedEvent;
+	decltype(qShits)::QueueElement* dequeuedEvent;
 	unsigned int dispatchedEventId = qShits.reserveEventForDispatching(dequeuedEvent);
-	cerr << "Obtained dispatched eventId is " << dispatchedEventId << endl << flush;
 	qShits.answerlessConsumerProcedureReference(qShits.answerlessConsumerThese[0], dequeuedEvent->eventParameter);
-	cerr << "Event was just consumed" << endl << flush;
-//	qShits.notifyEventListeners(dequeuedEvent->eventParameter);
-//	cerr << "Event was just notified" << endl << flush;
 	qShits.releaseEvent(dispatchedEventId);
-	cerr << "Event was just released" << endl << flush;
 
 
 	this_thread::sleep_for(chrono::milliseconds(10));
 
 	BOOST_TEST(answerlessConsumedEvents[1] == 1,    "Event consumption");
-//	BOOST_TEST(          notifyedEvents[1] == 1023, "Event notification");
 
-	HEAP_TRACE("alternativelyWaitForAConsumableEvent", output);
+	HEAP_TRACE("waitForAConsumableEvent", output);
 }
 
-//BOOST_AUTO_TEST_CASE(busyEventGeneration) {
-//	HEAP_MARK();
-//
-//	QueuedClassEventLink<unsigned int, unsigned int, 10, uint_fast8_t> myEvent("busyEventGeneration tests");
-//	QueueEventDispatcher myDispatcher(myEvent, 4);
-//
-//	myEvent.addListener(&QueueEventLinkSuiteObjects::_eventListener1,                    (QueueEventLinkSuiteObjects*)this);
-//	myEvent.setAnswerlessConsumer(&QueueEventLinkSuiteObjects::_answerlessEventConsumer, (QueueEventLinkSuiteObjects*)this);
-//
-//	this_thread::sleep_for(chrono::milliseconds(300));
-//
-//	BOOST_TEST(answerlessConsumedEvents[1] == 0);
-//	BOOST_TEST(          notifyedEvents[1] == 0);
-//
-//	unsigned int* reservedParameterReference;
-//	unsigned int eventId;
-//	for (int n=0; n<17; n++) {
-//		for (int i=0; i<65536; i++) {
-//			eventId = myEvent.reentrantlyReserveEventForReporting(reservedParameterReference);
-//			*reservedParameterReference = i;
-//			myEvent.reentrantlyReportReservedEvent(eventId);
-//		}
-//	}
-//
-//	this_thread::sleep_for(chrono::milliseconds(2000));
-//	myDispatcher.stopASAP();
-//
-//	checkAllElements(answerlessConsumedEvents, notifyedEvents, 17);
-//	BOOST_TEST(answerlessConsumedEvents[1] == 17);
-//	BOOST_TEST(          notifyedEvents[1] == 17);
-//
-//	HEAP_TRACE("busyEventGeneration", output);
-//}
-
-BOOST_AUTO_TEST_CASE(alternativelyBusyEventGeneration) {
+BOOST_AUTO_TEST_CASE(busyEventGeneration) {
 	HEAP_MARK();
 
-	mutua::events::QueueEventLink<unsigned int, unsigned int, 10, 8> myEvent("alternativelyBusyEventGeneration tests");
+	mutua::events::QueueEventLink<unsigned int, unsigned int, 10, 8> myEvent("busyEventGeneration tests");
 	myEvent.setAnswerlessConsumer(&QueueEventLinkSuiteObjects::_answerlessEventConsumer, {(QueueEventLinkSuiteObjects*)this, (QueueEventLinkSuiteObjects*)this, (QueueEventLinkSuiteObjects*)this});
-//	mutua::events::QueueEventDispatcher myDispatcher(myEvent, 3, 0, true, true, true, false, true);
-	mutua::events::QueueEventDispatcher myDispatcher(myEvent, 3, 0, true, false, true, false, true);
+	mutua::events::QueueEventDispatcher myDispatcher(myEvent, 3, 0, true, true, true, false, true);
+//	mutua::events::QueueEventDispatcher myDispatcher(myEvent, 3, 0, true, false, true, false, true);
 	myEvent.addListener          (&QueueEventLinkSuiteObjects::_eventListener1,          (QueueEventLinkSuiteObjects*)this);
-
-	cerr << "coco antes" << endl << flush;
-	this_thread::sleep_for(chrono::milliseconds(300));
-	cerr << "coco depois" << endl << flush;
 
 	BOOST_TEST(answerlessConsumedEvents[1] == 0);
 	BOOST_TEST(          notifyedEvents[1] == 0);
@@ -942,19 +923,19 @@ BOOST_AUTO_TEST_CASE(alternativelyBusyEventGeneration) {
 			*reservedParameterReference = i;
 			myEvent.reportReservedEvent(eventId);
 //			cerr << " = " << i << endl << flush;
-			if (i%10 == 0) this_thread::sleep_for(chrono::milliseconds(1));
+//			if (i%10 == 0) this_thread::sleep_for(chrono::milliseconds(1));
 			//this_thread::sleep_for(chrono::milliseconds(16));
 		}
 	}
 
-	this_thread::sleep_for(chrono::milliseconds(500));
-	myDispatcher.stopASAP();
+	// wait until all queue is processed
+	myDispatcher.stopWhenEmpty();
 
 	BOOST_TEST(answerlessConsumedEvents[1] == 64);
 	BOOST_TEST(          notifyedEvents[1] == 64);
 	checkAllElements(answerlessConsumedEvents, notifyedEvents, 64);
 
-	HEAP_TRACE("alternativelyBusyEventGeneration", output);
+	HEAP_TRACE("busyEventGeneration", output);
 }
 
 BOOST_AUTO_TEST_SUITE_END();
