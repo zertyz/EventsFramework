@@ -331,13 +331,8 @@ namespace mutua::events {
             return eventId;
         }
 
-        /** Allow 'eventId' reuse (make that slot available for enqueueing a new element).
-          * Answerless events call it uppon consumption & notifications;
-          * Answerfull events call it after notifications and after the event producer gets hold of the 'answer' object reference.
-          * This method takes constant time -- a little longer when the queue is full. */
-        inline void releaseEvent(unsigned int eventId) {
-            // signal that the slot at 'eventId' is available for enqueue reservations
-        	queueGuard.lock();
+        /** Common code between answerless and answerfull events to allow 'eventId' reuse (making that slot available for enqueueing a new element). */
+        inline void unguardedReleaseEvent(unsigned int eventId) {
         	events[eventId].reserved = false;
             if (eventId == queueReservedHead) {
             	do {
@@ -348,16 +343,26 @@ namespace mutua::events {
                 	reservationGuard.unlock();
                 }
             }
+        }
+
+        /** Allows 'eventId' reuse for answerless events. */
+        inline void releaseEvent(unsigned int eventId) {
+            // signal that the slot at 'eventId' is available for enqueue reservations
+        	queueGuard.lock();
+        	unguardedReleaseEvent(eventId);
 			queueGuard.unlock();
         }
 
         /** This method should be called both after notifications got processed and after 'waitForAnswer' done its job.
-          * Alloes 'eventId' to be reused. */
-        inline bool releaseAnswerfullEvent(unsigned int eventId) {
+          * Allows 'eventId' to be reused for listeneable answerfull events. */
+        inline bool releaseListeneableAnswerfullEvent(unsigned int eventId) {
+        	queueGuard.lock();
             if (events[eventId].answered && events[eventId].listened) {
-                releaseEvent(eventId);
+            	unguardedReleaseEvent(eventId);
+    			queueGuard.unlock();
                 return true;
             } else {
+    			queueGuard.unlock();
                 return false;
             }
         }
@@ -373,31 +378,35 @@ namespace mutua::events {
 
         inline _AnswerType* waitForAnswer(unsigned int eventId) {
             QueueElement& event = events[eventId];
-            _AnswerType*    answerObjectReference = event->answerObjectReference;
+            _AnswerType*    answerObjectReference = event.answerObjectReference;
             if (answerObjectReference == nullptr) {
                 THROW_EXCEPTION(runtime_error, "Attempting to wait for an answer from an event of '" + eventName + "', which was not prepared to produce an answer. "
                                                "Did you call 'reserveEventForReporting(_ArgumentType)' instead of 'reserveEventForReporting(_ArgumentType&, const _AnswerType&)' ?");
             }
             // wait until the answer is ready (the answerfull consumer must unlock the mutex as soon as the answer is ready)
             event.answerMutex.lock();
-            event.answerMutex.unlock();
             event.answered = true;
+            releaseListeneableAnswerfullEvent(eventId);
+            event.answerMutex.unlock();
             // checks for any exception that might have been thrown
             if (event.exception != nullptr) {
                 if (!answerObjectReference) {
-                    // exception happened before issueing the answer -- stop the thread flow.
+                    // exception happened before issuing the answer -- stop the thread flow.
                     std::rethrow_exception(event.exception);
                 } else {
-                    // exception happened after issueing the answer -- we'll continue with a warning.
+                    // exception happened after issuing the answer -- we'll continue with a warning.
                     // note: this code is likely not to be reached if 'waitForAnswer' was called before
                     //       the answer was ready.
-                    cerr << "QueueEventLink: exception detected on event '" << eventName <<
-                            "', after the answerfull consumer sucessfully procuced an answer.\n" <<
-                            "(note: not all such exceptions will get caught by this method)" <<
-                            "Caused by: " << event.exception.what() << endl << flush;
+                	try {
+                        std::rethrow_exception(event.exception);
+                	} catch (const exception& e) {
+						cerr << "QueueEventLink: exception detected on event '" << eventName <<
+								"', after the answerfull consumer successfully produced an answer.\n" <<
+								"(note: not all such exceptions will get caught by this method)" <<
+								"Caused by: " << e.what() << endl << flush;
+                	}
                 }
             }
-            releaseAnswerfullEvent(eventId);
             return answerObjectReference;
         }
     };

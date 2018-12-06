@@ -637,7 +637,7 @@ struct QueueEventLinkSuiteObjects {
 
 
     QueueEventLinkSuiteObjects()
-    		: answerfullyConsumedEvents {0}
+    		: answerfullConsumedEvents {0}
     		, answerlessConsumedEvents  {0}
     		, notifyedEvents            {0} {
     	static bool firstRun = true;
@@ -663,11 +663,11 @@ struct QueueEventLinkSuiteObjects {
 
 
     // event consumers & listeners
-    unsigned int answerfullyConsumedEvents[65536];
+    unsigned int answerfullConsumedEvents[65536];
     inline void _answerfullEventConsumer(const unsigned int& n, unsigned int* answer, std::mutex& answerMutex) {
     	*answer = n;
     	answerMutex.unlock();	// answer is ready
-    	answerfullyConsumedEvents[n]++;
+    	answerfullConsumedEvents[n]++;
 	}
 	unsigned int answerlessConsumedEvents[65536];
 	mutex m;
@@ -860,17 +860,71 @@ BOOST_AUTO_TEST_CASE(testQueueLengthAndQueueReservedLength) {
 
 	// test lengths one by one, until queue is full
 	output("Length tests: ");
-	for (int i=1; i<=256; i++) {
+	for (int expectedLength=1; expectedLength<=256; expectedLength++) {
 		unsigned int* element;
 		unsigned int eventId = queue.reserveEventForReporting(element);
-		*element = i;
+		BOOST_TEST(queue.getQueueReservedLength() == expectedLength);
+		*element = expectedLength;
 		queue.reportReservedEvent(eventId);
-		output(".");
-		BOOST_TEST(queue.getQueueLength() == i);
-		BOOST_TEST(queue.getQueueReservedLength() == i);
+		BOOST_TEST(queue.getQueueLength() == expectedLength);
+		output(">");
 	}
+	// and then back one by one, until it is empty
+	for (int expectedLength=255; expectedLength>=0; expectedLength--) {
+		decltype(queue)::QueueElement* queueElement;
+		unsigned int eventId = queue.reserveEventForDispatching(queueElement);
+		BOOST_TEST(queue.getQueueLength() == expectedLength);
+		queue.releaseEvent(eventId);
+		BOOST_TEST(queue.getQueueReservedLength() == expectedLength);
+		output("<");
+	}
+	output("\n");
 
 	HEAP_TRACE("testQueueLengthAndQueueReservedLength", output);
+}
+
+BOOST_AUTO_TEST_CASE(testAnswerfullEvents) {
+	HEAP_MARK();
+
+	mutua::events::QueueEventLink<unsigned int, unsigned int, 10, 8> myEvent("testAnswerfullEvents");
+	myEvent.setAnswerfullConsumer(&QueueEventLinkSuiteObjects::_answerfullEventConsumer, {(QueueEventLinkSuiteObjects*)this, (QueueEventLinkSuiteObjects*)this, (QueueEventLinkSuiteObjects*)this});
+	myEvent.addListener          (&QueueEventLinkSuiteObjects::_eventListener1,          (QueueEventLinkSuiteObjects*)this);
+	mutua::events::QueueEventDispatcher myDispatcher(myEvent, 3, 0, true, true, false, true, true);
+
+	BOOST_TEST(answerlessConsumedEvents[1] == 0);
+	BOOST_TEST(          notifyedEvents[1] == 0);
+
+	thread threads[64];
+	for (int n=0; n<64; n++) threads[n] = thread([&] {
+		unsigned int* reservedParameterReference;
+		unsigned int eventId;
+		unsigned int answer;
+		for (unsigned int i=0; i<65536; i++) {
+			eventId = myEvent.reserveEventForReporting(reservedParameterReference, &answer);
+//			cerr << ">>" << eventId << flush;
+			*reservedParameterReference = i;
+			myEvent.reportReservedEvent(eventId);
+//			cerr << " = " << flush;
+			myEvent.waitForAnswer(eventId);
+//			cerr << i << " (" << answer << ")" << endl << flush;
+//			if (i%10 == 0) this_thread::sleep_for(chrono::milliseconds(1));
+			this_thread::sleep_for(chrono::milliseconds(80-n));
+		}
+	});
+
+	// wait for producers
+	for (int n=0; n<64; n++) {
+		threads[n].join();
+	}
+
+	// wait until all queue is processed
+	myDispatcher.stopWhenEmpty();
+
+	BOOST_TEST(answerfullConsumedEvents[1] == 64);
+	BOOST_TEST(          notifyedEvents[1] == 64);
+	checkAllElements(answerfullConsumedEvents, notifyedEvents, 64);
+
+	HEAP_TRACE("testAnswerfullEvents", output);
 }
 
 BOOST_AUTO_TEST_CASE(waitForAConsumableEvent) {
@@ -907,9 +961,8 @@ BOOST_AUTO_TEST_CASE(busyEventGeneration) {
 
 	mutua::events::QueueEventLink<unsigned int, unsigned int, 10, 8> myEvent("busyEventGeneration tests");
 	myEvent.setAnswerlessConsumer(&QueueEventLinkSuiteObjects::_answerlessEventConsumer, {(QueueEventLinkSuiteObjects*)this, (QueueEventLinkSuiteObjects*)this, (QueueEventLinkSuiteObjects*)this});
-	mutua::events::QueueEventDispatcher myDispatcher(myEvent, 3, 0, true, true, true, false, true);
-//	mutua::events::QueueEventDispatcher myDispatcher(myEvent, 3, 0, true, false, true, false, true);
 	myEvent.addListener          (&QueueEventLinkSuiteObjects::_eventListener1,          (QueueEventLinkSuiteObjects*)this);
+	mutua::events::QueueEventDispatcher myDispatcher(myEvent, 3, 0, true, true, true, false, true);
 
 	BOOST_TEST(answerlessConsumedEvents[1] == 0);
 	BOOST_TEST(          notifyedEvents[1] == 0);
