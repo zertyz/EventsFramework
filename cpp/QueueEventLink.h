@@ -6,7 +6,7 @@
 using namespace std;
 
 #include <BetterExceptions.h>
-using namespace mutua::cpputils;
+//using namespace mutua::cpputils;
 
 
 namespace mutua::events {
@@ -61,13 +61,6 @@ namespace mutua::events {
         void*        listenersThis[_NListeners];
         unsigned int nListenerProcedureReferences;
 
-        // mutexes
-        alignas(64) mutex  reservationGuard;
-        alignas(64) mutex* fullGuard;
-        alignas(64) mutex  dequeueGuard;
-        alignas(64) mutex* emptyGuard;
-        alignas(64) mutex  queueGuard;
-
         // queue
         alignas(64) QueueElement  events[numberOfQueueSlots];	// here are the elements of the queue
         alignas(64) unsigned int  queueHead;          			// will never be behind of 'queueReservedHead'
@@ -75,6 +68,13 @@ namespace mutua::events {
         alignas(64) unsigned int  queueReservedHead;  			// will never be  ahead of 'queueHead'
         alignas(64) unsigned int  queueReservedTail;  			// will never be behind of 'queueTail'
         // note: std::hardware_destructive_interference_size seems to not be supported in gcc -- 64 is x86_64 default (possibly the same for armv7)
+
+        // mutexes
+        mutex  reservationGuard;
+        mutex  dequeueGuard;
+        mutex  queueGuard;
+        bool   isEmpty;
+        bool   isFull;
 
         // debug info
         string eventName;
@@ -91,7 +91,7 @@ namespace mutua::events {
                 , listenerProcedureReferences          {nullptr}
                 , listenersThis                        {nullptr}
                 , nListenerProcedureReferences         (0)
-                , fullGuard                            (nullptr)
+                , isFull                               (nullptr)
                 , queueHead                            (0)
                 , queueTail                            (0)
                 , queueReservedHead                    (0)
@@ -99,11 +99,15 @@ namespace mutua::events {
 
             // queue starts empty & locked for dequeueing
 			dequeueGuard.lock();
-			emptyGuard = &dequeueGuard;
+			isEmpty = true;
 		}
 
+        /** Destructing a 'QueueEventLink' is only safe when the queues are empty and no threads are waiting to enqueue or dequeue an event */
         ~QueueEventLink() {
         	unsetConsumer();
+
+        	// assure all mutexes are unlocked -- if the statement above is true, this is not needed
+        	//for ()
         }
 
         template <typename _Class> void setAnswerlessConsumer(void (_Class::*consumerProcedureReference) (const _ArgumentType&), vector<_Class*> thisInstances) {
@@ -196,8 +200,9 @@ namespace mutua::events {
 
         /** Queue length, differently than the queue size, is the number of elements currently waiting to be dequeued */
         unsigned int getQueueLength() {
+        	scoped_lock<mutex> lock(queueGuard);
         	if (queueTail == queueHead) {
-        		if (fullGuard) {
+        		if (isFull) {
         			return numberOfQueueSlots;
         		} else {
         			return 0;
@@ -212,8 +217,9 @@ namespace mutua::events {
 
         /** Returns the number of slots that are currently holding a dequeuable element + the ones that are currently compromised into holding one of those */
         unsigned int getQueueReservedLength() {
+        	scoped_lock<mutex> lock(queueGuard);
         	if (queueReservedTail == queueReservedHead) {
-        		if (fullGuard) {
+        		if (isFull) {
         			return numberOfQueueSlots;
         		} else {
         			return 0;
@@ -236,7 +242,7 @@ namespace mutua::events {
 			queueGuard.lock();
 
 			// is queue full?
-			if ( (queueReservedTail == queueReservedHead) && fullGuard ) {
+			if ( (queueReservedTail == queueReservedHead) && isFull ) {
 				// Queue was already full before the call to this method. Wait on the mutex
 				queueGuard.unlock();
 				reservationGuard.lock();	// 2nd lock. Any caller will wait here. Unlocked only by 'releaseEvent(...)'
@@ -250,16 +256,16 @@ namespace mutua::events {
 			// will adding this element make the queue full? Set the waiting mutex
 			if (queueReservedTail == queueReservedHead) {
 				reservationGuard.lock();		// 1st lock. Won't wait yet.
-				fullGuard = &reservationGuard;	// 'fullGuard' only points to 'reservationGuard'
+				isFull = true;
 			}
 
             // prepare the event slot and return the event id
-            QueueElement& futureEvent         = events[eventId];
-            eventParameterPointer             = &futureEvent.eventParameter;
-            futureEvent.reserved              = true;
+            QueueElement& futureEvent = events[eventId];
+            futureEvent.reserved      = true;
 
 			queueGuard.unlock();
 
+            eventParameterPointer = &futureEvent.eventParameter;
 			return eventId;
         }
 
@@ -288,8 +294,8 @@ namespace mutua::events {
             	do {
             		queueTail = (queueTail+1) & queueSlotsModulus;
             	} while ( (queueTail != queueReservedTail) && (!events[queueTail].reserved) );
-                if (emptyGuard) {
-                	emptyGuard = nullptr;
+                if (isEmpty) {
+                	isEmpty = false;
                 	dequeueGuard.unlock();	// 'emptyGuard' only points to 'dequeueGuard'
                 }
             }
@@ -306,7 +312,7 @@ namespace mutua::events {
 			queueGuard.lock();
 
 			// is queue empty?
-            if ( (queueHead == queueTail) && emptyGuard ) {
+            if ( (queueHead == queueTail) && isEmpty ) {
             	// Queue was already empty before the call to this method. Wait on the mutex
             	queueGuard.unlock();
             	dequeueGuard.lock();	// 2nd lock. Any caller will wait here. Unlocked only by 'reportReservedEvent(...)'
@@ -320,7 +326,7 @@ namespace mutua::events {
             // will dequeueing this element make the queue empty? Set the waiting mutex
             if (queueHead == queueTail) {
             	dequeueGuard.lock();		// 1st lock. Won't wait yet.
-            	emptyGuard = &dequeueGuard;	// 'emptyGuard' only points to 'dequeueGuard'
+            	isEmpty = true;
             }
 
             dequeuedElementPointer = &events[eventId];
@@ -331,15 +337,15 @@ namespace mutua::events {
             return eventId;
         }
 
-        /** Common code between answerless and answerfull events to allow 'eventId' reuse (making that slot available for enqueueing a new element). */
+        /** Common code, without mutexes, between answerless and answerfull events to allow 'eventId' reuse (making that slot available for enqueueing a new element). */
         inline void unguardedReleaseEvent(unsigned int eventId) {
         	events[eventId].reserved = false;
             if (eventId == queueReservedHead) {
             	do {
             		queueReservedHead = (queueReservedHead+1) & queueSlotsModulus;
             	} while ( (queueReservedHead != queueHead) && (!events[queueReservedHead].reserved) );
-                if (fullGuard) {
-                	fullGuard = nullptr;
+                if (isFull) {
+                	isFull = false;
                 	reservationGuard.unlock();
                 }
             }
@@ -347,7 +353,6 @@ namespace mutua::events {
 
         /** Allows 'eventId' reuse for answerless events. */
         inline void releaseEvent(unsigned int eventId) {
-            // signal that the slot at 'eventId' is available for enqueue reservations
         	queueGuard.lock();
         	unguardedReleaseEvent(eventId);
 			queueGuard.unlock();
@@ -377,14 +382,13 @@ namespace mutua::events {
         //           pode ser usado para varificar se o número de threads é permitido pelos nao reentrantes, direct, etc.
 
         inline _AnswerType* waitForAnswer(unsigned int eventId) {
-            QueueElement& event = events[eventId];
-            _AnswerType*    answerObjectReference = event.answerObjectReference;
+            QueueElement& event                = events[eventId];
+            _AnswerType* answerObjectReference = event.answerObjectReference;
             if (answerObjectReference == nullptr) {
                 THROW_EXCEPTION(runtime_error, "Attempting to wait for an answer from an event of '" + eventName + "', which was not prepared to produce an answer. "
                                                "Did you call 'reserveEventForReporting(_ArgumentType)' instead of 'reserveEventForReporting(_ArgumentType&, const _AnswerType&)' ?");
             }
-            // wait until the answer is ready (the answerfull consumer must unlock the mutex as soon as the answer is ready)
-            event.answerMutex.lock();
+            event.answerMutex.lock();	// wait until the answer is ready (the answerfull consumer must unlock the mutex as soon as the answer is ready)
             event.answered = true;
             releaseListeneableAnswerfullEvent(eventId);
             event.answerMutex.unlock();

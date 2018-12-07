@@ -662,15 +662,18 @@ struct QueueEventLinkSuiteObjects {
     }
 
 
+	mutex m;
+
     // event consumers & listeners
     unsigned int answerfullConsumedEvents[65536];
     inline void _answerfullEventConsumer(const unsigned int& n, unsigned int* answer, std::mutex& answerMutex) {
+//    	m.lock();
+    	answerfullConsumedEvents[n]++;
+//    	m.unlock();
     	*answer = n;
     	answerMutex.unlock();	// answer is ready
-    	answerfullConsumedEvents[n]++;
 	}
 	unsigned int answerlessConsumedEvents[65536];
-	mutex m;
 	inline void _answerlessEventConsumer(const unsigned int& n) {
 		//m.lock();
     	answerlessConsumedEvents[n]++;
@@ -894,28 +897,37 @@ BOOST_AUTO_TEST_CASE(testAnswerfullEvents) {
 	BOOST_TEST(answerlessConsumedEvents[1] == 0);
 	BOOST_TEST(          notifyedEvents[1] == 0);
 
-	thread threads[64];
-	for (int n=0; n<64; n++) threads[n] = thread([&] {
-		unsigned int* reservedParameterReference;
-		unsigned int eventId;
-		unsigned int answer;
-		for (unsigned int i=0; i<65536; i++) {
-			eventId = myEvent.reserveEventForReporting(reservedParameterReference, &answer);
-//			cerr << ">>" << eventId << flush;
-			*reservedParameterReference = i;
-			myEvent.reportReservedEvent(eventId);
-//			cerr << " = " << flush;
-			myEvent.waitForAnswer(eventId);
-//			cerr << i << " (" << answer << ")" << endl << flush;
-//			if (i%10 == 0) this_thread::sleep_for(chrono::milliseconds(1));
-			this_thread::sleep_for(chrono::milliseconds(80-n));
+	constexpr int threadsLength = 2;
+	thread threads[threadsLength];
+	for (int n=0; n<64; n++) {
+		cerr << ">n>" << n << flush;
+		// a previous thread already exist on that slot. Lets make sure it has ended.
+		if (n >= threadsLength) {
+			threads[n%threadsLength].join();
 		}
-	});
+		threads[n%threadsLength] = thread([&] {
+			unsigned int* reservedParameterReference;
+			unsigned int eventId;
+			unsigned int answer;
+			for (unsigned int i=0; i<65536; i++) {
+				eventId = myEvent.reserveEventForReporting(reservedParameterReference, &answer);
+//				cerr << ">>" << eventId << flush;
+				*reservedParameterReference = i;
+				myEvent.reportReservedEvent(eventId);
+//				cerr << " = " << flush;
+				myEvent.waitForAnswer(eventId);
+//				cerr << i << " (" << answer << ")" << endl << flush;
+//				if (i%10 == 0) this_thread::sleep_for(chrono::milliseconds(1));
+//				this_thread::sleep_for(chrono::milliseconds(80-n));
+			}
+		});
+	};
 
 	// wait for producers
-	for (int n=0; n<64; n++) {
+	for (int n=0; n<threadsLength; n++) {
 		threads[n].join();
 	}
+	this_thread::sleep_for(chrono::milliseconds(5000));
 
 	// wait until all queue is processed
 	myDispatcher.stopWhenEmpty();
@@ -960,16 +972,17 @@ BOOST_AUTO_TEST_CASE(busyEventGeneration) {
 	HEAP_MARK();
 
 	mutua::events::QueueEventLink<unsigned int, unsigned int, 10, 8> myEvent("busyEventGeneration tests");
-	myEvent.setAnswerlessConsumer(&QueueEventLinkSuiteObjects::_answerlessEventConsumer, {(QueueEventLinkSuiteObjects*)this, (QueueEventLinkSuiteObjects*)this, (QueueEventLinkSuiteObjects*)this});
+	myEvent.setAnswerlessConsumer(&QueueEventLinkSuiteObjects::_answerlessEventConsumer, {(QueueEventLinkSuiteObjects*)this, (QueueEventLinkSuiteObjects*)this, (QueueEventLinkSuiteObjects*)this, (QueueEventLinkSuiteObjects*)this});
 	myEvent.addListener          (&QueueEventLinkSuiteObjects::_eventListener1,          (QueueEventLinkSuiteObjects*)this);
-	mutua::events::QueueEventDispatcher myDispatcher(myEvent, 3, 0, true, true, true, false, true);
+	mutua::events::QueueEventDispatcher myDispatcher(myEvent, 4, 0, true, true, true, false, true);
 
 	BOOST_TEST(answerlessConsumedEvents[1] == 0);
 	BOOST_TEST(          notifyedEvents[1] == 0);
 
-	unsigned int* reservedParameterReference;
-	unsigned int eventId;
-	for (int n=0; n<64; n++) {
+	thread threads[64];
+	for (int n=0; n<64; n++) threads[n] = thread([&] {
+		unsigned int eventId;
+		unsigned int* reservedParameterReference;
 		for (unsigned int i=0; i<65536; i++) {
 			eventId = myEvent.reserveEventForReporting(reservedParameterReference);
 //			cerr << ">>" << eventId << flush;
@@ -979,7 +992,13 @@ BOOST_AUTO_TEST_CASE(busyEventGeneration) {
 //			if (i%10 == 0) this_thread::sleep_for(chrono::milliseconds(1));
 			//this_thread::sleep_for(chrono::milliseconds(16));
 		}
+	});
+
+	// wait for producers
+	for (int n=0; n<64; n++) {
+		threads[n].join();
 	}
+	this_thread::sleep_for(chrono::milliseconds(200));
 
 	// wait until all queue is processed
 	myDispatcher.stopWhenEmpty();

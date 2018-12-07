@@ -131,17 +131,17 @@ namespace mutua::events {
 		/** Cause all threads not to process any further elements from this point on */
 		void stopASAP() {
 			if (isActive) {
+				isActive = false;
 				for (int i=0; i<nThreads; i++) {
 					threads[i].detach();
 				}
-				isActive = false;
 			}
 		}
 
 		/** Wait until queue is empty to stop all threads */
 		void stopWhenEmpty() {
-			while (el.getQueueLength()) {
-				this_thread::sleep_for(chrono::milliseconds(1));
+			while (!el.isEmpty) {
+				this_thread::sleep_for(chrono::milliseconds(10));
 			}
 			stopASAP();
 		}
@@ -307,23 +307,23 @@ namespace mutua::events {
 
 		void debugTracker() {
 			bool isReservationGuardLocked;
-			bool isFullGuardNotNull;
+			bool isFull;
 			bool isQueueGuardLocked;
 			bool isDequeueGuardLocked;
-			bool isEmptyGuardNotNull;
+			bool isEmpty;
 			while (isActive) {
 
 				isReservationGuardLocked = !el.reservationGuard.try_lock();
-				isFullGuardNotNull       = el.fullGuard != nullptr;
+				isFull                   = el.isFull;
 				isQueueGuardLocked       = !el.queueGuard.try_lock();
 				isDequeueGuardLocked     = !el.dequeueGuard.try_lock();
-				isEmptyGuardNotNull      = el.emptyGuard != nullptr;
+				isEmpty                  = el.isEmpty;
 
 				if (!isReservationGuardLocked) el.reservationGuard.unlock();
 				if (!isQueueGuardLocked)       el.queueGuard.unlock();
 				if (!isDequeueGuardLocked)     el.dequeueGuard.unlock();
 
-				cerr << "\nQueueEventDispatcher('" << el.eventName << "'): rHead=" << el.queueReservedHead << "; rTail=" << el.queueReservedTail << "; reservedLength: " << el.getQueueReservedLength() << " | qHead=" << el.queueHead << "; qTail=" << el.queueTail << "; queueLength: " << el.getQueueLength() << " | isReservationGuardLocked=" << isReservationGuardLocked << "; isFullGuardNotNull=" << isFullGuardNotNull << "; isQueueGuardLocked=" << isQueueGuardLocked << "; isDequeueGuardLocked=" << isDequeueGuardLocked << "; isEmptyGuardNotNull=" << isEmptyGuardNotNull << endl << flush;
+				cerr << "\nQueueEventDispatcher('" << el.eventName << "'): rHead=" << el.queueReservedHead << "; rTail=" << el.queueReservedTail << "; reservedLength: " << el.getQueueReservedLength() << " | qHead=" << el.queueHead << "; qTail=" << el.queueTail << "; queueLength: " << el.getQueueLength() << " | isReservationGuardLocked=" << isReservationGuardLocked << "; isFull=" << isFull << "; isQueueGuardLocked=" << isQueueGuardLocked << "; isDequeueGuardLocked=" << isDequeueGuardLocked << "; isEmpty=" << isEmpty << endl << flush;
 				this_thread::sleep_for(chrono::milliseconds(1000));
 			}
 		}
