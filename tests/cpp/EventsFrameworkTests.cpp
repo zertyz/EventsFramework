@@ -665,7 +665,7 @@ struct QueueEventLinkSuiteObjects {
 	mutex m;
 
     // event consumers & listeners
-    unsigned int answerfullConsumedEvents[65536];
+    atomic_uint answerfullConsumedEvents[65536];
     inline void _answerfullEventConsumer(const unsigned int& n, unsigned int* answer, std::mutex& answerMutex) {
 //    	m.lock();
     	answerfullConsumedEvents[n]++;
@@ -673,7 +673,7 @@ struct QueueEventLinkSuiteObjects {
     	*answer = n;
     	answerMutex.unlock();	// answer is ready
 	}
-	unsigned int answerlessConsumedEvents[65536];
+    atomic_uint answerlessConsumedEvents[65536];
 	inline void _answerlessEventConsumer(const unsigned int& n) {
 		//m.lock();
     	answerlessConsumedEvents[n]++;
@@ -681,7 +681,7 @@ struct QueueEventLinkSuiteObjects {
     	///*if (n%10 == 0)*/ this_thread::sleep_for(chrono::milliseconds(1));
 		//cerr << n << ((n%26 == 0) ? ",\n" : ",") << flush;
 	}
-	unsigned int notifyedEvents[65536];
+	atomic_uint notifyedEvents[65536];
 	inline void _eventListener1(const unsigned int& n) {
     	notifyedEvents[n]+=1;
 	}
@@ -713,7 +713,7 @@ struct QueueEventLinkSuiteObjects {
     	notifyedEvents[n]+=512;
 	}
 
-	void checkAllElements(unsigned int* consumerArray, unsigned int* listenerArray, unsigned int expectedValue) {
+	void checkAllElements(atomic_uint* consumerArray, atomic_uint* listenerArray, unsigned int expectedValue) {
 		for (int i=0; i<65536; i++) {
 			if (consumerArray[i] != expectedValue) {
 				BOOST_REQUIRE_MESSAGE(consumerArray[i] == expectedValue, "consumerArray["+to_string(i)+"] == " + to_string(expectedValue) + " failed (it is "+to_string(consumerArray[i])+").");
@@ -890,9 +890,9 @@ BOOST_AUTO_TEST_CASE(testAnswerfullEvents) {
 	HEAP_MARK();
 
 	mutua::events::QueueEventLink<unsigned int, unsigned int, 10, 8> myEvent("testAnswerfullEvents");
-	myEvent.setAnswerfullConsumer(&QueueEventLinkSuiteObjects::_answerfullEventConsumer, {(QueueEventLinkSuiteObjects*)this, (QueueEventLinkSuiteObjects*)this, (QueueEventLinkSuiteObjects*)this});
+	myEvent.setAnswerfullConsumer(&QueueEventLinkSuiteObjects::_answerfullEventConsumer, {(QueueEventLinkSuiteObjects*)this, (QueueEventLinkSuiteObjects*)this, (QueueEventLinkSuiteObjects*)this, (QueueEventLinkSuiteObjects*)this});
 	myEvent.addListener          (&QueueEventLinkSuiteObjects::_eventListener1,          (QueueEventLinkSuiteObjects*)this);
-	mutua::events::QueueEventDispatcher myDispatcher(myEvent, 3, 0, true, true, false, true, true);
+	mutua::events::QueueEventDispatcher myDispatcher(myEvent, 4, 0, true, true, false, true, true);
 
 	BOOST_TEST(answerlessConsumedEvents[1] == 0);
 	BOOST_TEST(          notifyedEvents[1] == 0);
@@ -900,7 +900,7 @@ BOOST_AUTO_TEST_CASE(testAnswerfullEvents) {
 	constexpr int threadsLength = 2;
 	thread threads[threadsLength];
 	for (int n=0; n<64; n++) {
-		cerr << ">n>" << n << flush;
+//		cerr << ">n>" << n << flush;
 		// a previous thread already exist on that slot. Lets make sure it has ended.
 		if (n >= threadsLength) {
 			threads[n%threadsLength].join();
@@ -927,7 +927,7 @@ BOOST_AUTO_TEST_CASE(testAnswerfullEvents) {
 	for (int n=0; n<threadsLength; n++) {
 		threads[n].join();
 	}
-	this_thread::sleep_for(chrono::milliseconds(5000));
+	//this_thread::sleep_for(chrono::milliseconds(2000));
 
 	// wait until all queue is processed
 	myDispatcher.stopWhenEmpty();
@@ -972,33 +972,41 @@ BOOST_AUTO_TEST_CASE(busyEventGeneration) {
 	HEAP_MARK();
 
 	mutua::events::QueueEventLink<unsigned int, unsigned int, 10, 8> myEvent("busyEventGeneration tests");
-	myEvent.setAnswerlessConsumer(&QueueEventLinkSuiteObjects::_answerlessEventConsumer, {(QueueEventLinkSuiteObjects*)this, (QueueEventLinkSuiteObjects*)this, (QueueEventLinkSuiteObjects*)this, (QueueEventLinkSuiteObjects*)this});
+	myEvent.setAnswerlessConsumer(&QueueEventLinkSuiteObjects::_answerlessEventConsumer, {(QueueEventLinkSuiteObjects*)this, (QueueEventLinkSuiteObjects*)this, (QueueEventLinkSuiteObjects*)this, (QueueEventLinkSuiteObjects*)this, (QueueEventLinkSuiteObjects*)this});
 	myEvent.addListener          (&QueueEventLinkSuiteObjects::_eventListener1,          (QueueEventLinkSuiteObjects*)this);
-	mutua::events::QueueEventDispatcher myDispatcher(myEvent, 4, 0, true, true, true, false, true);
+	mutua::events::QueueEventDispatcher myDispatcher(myEvent, 5, 0, true, true, true, false, true);
 
 	BOOST_TEST(answerlessConsumedEvents[1] == 0);
 	BOOST_TEST(          notifyedEvents[1] == 0);
 
-	thread threads[64];
-	for (int n=0; n<64; n++) threads[n] = thread([&] {
-		unsigned int eventId;
-		unsigned int* reservedParameterReference;
-		for (unsigned int i=0; i<65536; i++) {
-			eventId = myEvent.reserveEventForReporting(reservedParameterReference);
-//			cerr << ">>" << eventId << flush;
-			*reservedParameterReference = i;
-			myEvent.reportReservedEvent(eventId);
-//			cerr << " = " << i << endl << flush;
-//			if (i%10 == 0) this_thread::sleep_for(chrono::milliseconds(1));
-			//this_thread::sleep_for(chrono::milliseconds(16));
+	constexpr int threadsLength = 4;
+	thread threads[threadsLength];
+	for (int n=0; n<64; n++) {
+//		cerr << ">n>" << n << flush;
+		// a previous thread already exist on that slot. Lets make sure it has ended.
+		if (n >= threadsLength) {
+			threads[n%threadsLength].join();
 		}
-	});
+		threads[n%threadsLength] = thread([&] {
+			unsigned int eventId;
+			unsigned int* reservedParameterReference;
+			for (unsigned int i=0; i<65536; i++) {
+				eventId = myEvent.reserveEventForReporting(reservedParameterReference);
+//				cerr << ">>" << eventId << flush;
+				*reservedParameterReference = i;
+				myEvent.reportReservedEvent(eventId);
+//				cerr << " = " << i << endl << flush;
+//				if (i%10 == 0) this_thread::sleep_for(chrono::milliseconds(1));
+				//this_thread::sleep_for(chrono::milliseconds(16));
+			}
+		});
+	}
 
 	// wait for producers
-	for (int n=0; n<64; n++) {
+	for (int n=0; n<threadsLength; n++) {
 		threads[n].join();
 	}
-	this_thread::sleep_for(chrono::milliseconds(200));
+	//this_thread::sleep_for(chrono::milliseconds(2000));
 
 	// wait until all queue is processed
 	myDispatcher.stopWhenEmpty();

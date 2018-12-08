@@ -140,8 +140,24 @@ namespace mutua::events {
 
 		/** Wait until queue is empty to stop all threads */
 		void stopWhenEmpty() {
-			while (!el.isEmpty) {
-				this_thread::sleep_for(chrono::milliseconds(10));
+			int retries = 0;
+			int lastQueueHead         = el.queueHead;
+			int lastQueueTail         = el.queueTail;
+			int lastQueueReservedHead = el.queueReservedHead;
+			int lastQueueReservedTail = el.queueReservedTail;
+			while (retries < 100) {	// wait for a total of 100ms without any new events
+				if (el.isEmpty && (el.getQueueLength() == 0) && (el.getQueueReservedLength() == 0) &&
+					(lastQueueHead         == el.queueHead)         && (lastQueueTail         == el.queueTail) &&
+					(lastQueueReservedHead == el.queueReservedHead) && (lastQueueReservedTail == el.queueReservedTail)) {
+					retries++;
+				} else {
+					retries = 0;
+					lastQueueHead         = el.queueHead;
+					lastQueueTail         = el.queueTail;
+					lastQueueReservedHead = el.queueReservedHead;
+					lastQueueReservedTail = el.queueReservedTail;
+				}
+				this_thread::sleep_for(chrono::milliseconds(1));
 			}
 			stopASAP();
 		}
@@ -249,7 +265,7 @@ namespace mutua::events {
 		// if (zeroCopy && notifyEvents &&  consumeAnswerlessEvents && !consumeAnswerfullEvents)
 		void dispatchZeroCopyListeneableAndConsumableAnswerlessEventsLoop(int threadId, void* consumerThis) {
 			typename _QueueEventLink::QueueElement* dequeuedEvent;
-			unsigned int                            eventId;
+			int                                     eventId;
 			while (isActive) {
 				eventId = el.reserveEventForDispatching(dequeuedEvent);
 				consumeAnswerlessEvent(threadId, el.answerlessConsumerProcedureReference, consumerThis,     dequeuedEvent->eventParameter);
@@ -261,20 +277,19 @@ namespace mutua::events {
 		// if (zeroCopy && notifyEvents && !consumeAnswerlessEvents &&  consumeAnswerfullEvents)
 		void dispatchZeroCopyListeneableAndConsumableAnswerfullEventsLoop(int threadId, void* consumerThis) {
 			typename _QueueEventLink::QueueElement* dequeuedEvent;
-			unsigned int                            eventId;
+			int                                     eventId;
 			while (isActive) {
 				eventId = el.reserveEventForDispatching(dequeuedEvent);
 				consumeAnswerfullEvent(threadId, el.answerfullConsumerProcedureReference, consumerThis,     dequeuedEvent);
 				notifyEventObservers  (threadId, el.listenerProcedureReferences,          el.listenersThis, dequeuedEvent->eventParameter);
-				dequeuedEvent->listened = true;
-				el.releaseListeneableAnswerfullEvent(eventId);
+				el.releaseEvent(eventId);
 			}
 		}
 
 		// if ( zeroCopy && !notifyEvents &&  consumeAnswerlessEvents && !consumeAnswerfullEvents)
 		void dispatchZeroCopyConsumableAnswerlessEventsLoop(int threadId, void* consumerThis) {
 			typename _QueueEventLink::QueueElement* dequeuedEvent;
-			unsigned int                            eventId;
+			int                                     eventId;
 			while (isActive) {
 				eventId = el.reserveEventForDispatching(dequeuedEvent);
 				consumeAnswerlessEvent(threadId, el.answerlessConsumerProcedureReference, consumerThis, dequeuedEvent->eventParameter);
@@ -285,7 +300,7 @@ namespace mutua::events {
 		// if ( zeroCopy && !notifyEvents && !consumeAnswerlessEvents &&  consumeAnswerfullEvents )
 		void dispatchZeroCopyConsumableAnswerfullEventsLoop(int threadId, void* consumerThis) {
 			typename _QueueEventLink::QueueElement* dequeuedEvent;
-			unsigned int                            eventId;
+			int                                     eventId;
 			while (isActive) {
 				eventId = el.reserveEventForDispatching(dequeuedEvent);
 				consumeAnswerfullEvent(threadId, el.answerfullConsumerProcedureReference, consumerThis, dequeuedEvent);
@@ -296,7 +311,7 @@ namespace mutua::events {
 		// if ( zeroCopy &&  notifyEvents && !consumeAnswerlessEvents && !consumeAnswerfullEvents )
 		void dispatchZeroCopyListeneableEventsLoop(int threadId) {
 			typename _QueueEventLink::QueueElement* dequeuedEvent;
-			unsigned int                            eventId;
+			int                                     eventId;
 			while (isActive) {
 				eventId = el.reserveEventForDispatching(dequeuedEvent);
 				notifyEventObservers(threadId, el.listenerProcedureReferences, el.listenersThis, dequeuedEvent->eventParameter);
