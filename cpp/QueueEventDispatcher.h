@@ -145,7 +145,7 @@ namespace mutua::events {
 			int lastQueueTail         = el.queueTail;
 			int lastQueueReservedHead = el.queueReservedHead;
 			int lastQueueReservedTail = el.queueReservedTail;
-			while (retries < 100) {	// wait for a total of 100ms without any new events
+			while (retries < 10) {	// wait for a total of 10ms without any new events
 				if (el.isEmpty && (el.getQueueLength() == 0) && (el.getQueueReservedLength() == 0) &&
 					(lastQueueHead         == el.queueHead)         && (lastQueueTail         == el.queueTail) &&
 					(lastQueueReservedHead == el.queueReservedHead) && (lastQueueReservedTail == el.queueReservedTail)) {
