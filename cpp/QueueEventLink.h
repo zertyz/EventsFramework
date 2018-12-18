@@ -102,6 +102,18 @@ namespace mutua::events {
 			isEmpty = true;
 		}
 
+        /** Instantiate with an answerless consumer */
+        template <typename _Class> QueueEventLink(string eventName, void (_Class::*answerlessConsumerProcedureReference) (const _ArgumentType&), vector<_Class*> thisInstances)
+        		: QueueEventLink(eventName) {
+        	setAnswerlessConsumer(answerlessConsumerProcedureReference, thisInstances);
+        }
+
+        /** Instantiate with an answerfull consumer */
+        template <typename _Class> QueueEventLink(void (_Class::*answerfullConsumerProcedureReference) (const _ArgumentType&, _AnswerType*, std::mutex&), vector<_Class*> thisInstances)
+        		: QueueEventLink(eventName) {
+        	setAnswerfullConsumer(answerfullConsumerProcedureReference, thisInstances);
+        }
+
         /** Destructing a 'QueueEventLink' is only safe when the queues are empty and no threads are waiting to enqueue or dequeue an event */
         ~QueueEventLink() {
         	unsetConsumer();
