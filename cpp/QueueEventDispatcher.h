@@ -105,8 +105,9 @@ namespace mutua::events {
 
 		// default serializers
 		static string defaultEventParameterToStringSerializer(const unsigned int&  argument) { return to_string(argument); }
-		static string defaultEventParameterToStringSerializer(const _ArgumentType& argument) { return string(argument); }
 		static string defaultEventParameterToStringSerializer(const       string&  argument) { return argument; }
+		template <unsigned N>
+		static string defaultEventParameterToStringSerializer(const    char (&argument) [N]) { return string(argument); }
 
 		void setArgumentSerializer() {
 			if constexpr (std::is_integral<_ArgumentType>::value || std::is_constructible<std::string, _ArgumentType>::value) {
