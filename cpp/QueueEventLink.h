@@ -88,8 +88,8 @@ namespace mutua::events {
         		, answerfullConsumerProcedureReference (nullptr)
                 , answerfullConsumerThese              (nullptr)
 				, nAnswerfullConsumerThese             (0)
-                , listenerProcedureReferences          {nullptr}
-                , listenersThis                        {nullptr}
+                , listenerProcedureReferences          {}
+                , listenersThis                        {}
                 , nListenerProcedureReferences         (0)
                 , isFull                               (false)
                 , queueHead                            (0)
