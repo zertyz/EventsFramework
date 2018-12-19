@@ -119,7 +119,50 @@ namespace mutua::events {
 		}
 
 		~QueueEventDispatcher() {
+
 			stopASAP();
+
+			// we will now unlock all mutexes. this may cause false wakeups. to prevent
+			// calling listeners & consumers with wrong data, we will reset them
+			// note: we cannot help if any external thread is waiting for an answer -- a false wakeup will occur for them
+			// note 2: this wired mechanism is to prevent the usage of condition variables, which would produce false wakeups
+			//         and the need for (slow) code to deal with it.
+
+			// remove all listeners
+			el.nListenerProcedureReferences = 0;
+
+			// unset original & set dummy consumers to receive false wakeups
+			el.unsetConsumer();
+			el.setAnswerlessConsumer(&_QueueEventLink::dummyAnswerlessConsumer, {&el});
+			el.setAnswerfullConsumer(&_QueueEventLink::dummyAnswerfullConsumer, {&el});
+
+			// unlock any locked mutexes, allowing full & empty queue locks do proceed -- and wait a little until no mutex is locked again
+			mutex* guardMutexes[] = {&el.reservationGuard, &el.dequeueGuard, &el.queueGuard};
+			unsigned retries = 0;
+			while (retries < nThreads*5) {	// wait a minimum of ~ 20ms without any new locks on ~4 consumers
+				retries++;
+				for (unsigned i=0; i<sizeof(guardMutexes)/sizeof(guardMutexes[0]); i++) {
+					// prevent further lockings
+					el.isFull            = false;
+					el.isEmpty           = false;
+					el.queueHead         = 0;
+					el.queueTail         = 1;
+					el.queueReservedHead = 0;
+					el.queueReservedTail = 1;
+					if (isMutexLocked(*guardMutexes[i])) {
+						guardMutexes[i]->unlock();
+						retries = 0;
+					}
+				}
+				// unlock any answer mutexes
+				for (unsigned i=0; i<el.numberOfQueueSlots; i++) {
+					if (isMutexLocked(el.events[i].answerMutex)) {
+						el.events[i].answerMutex.unlock();
+					}
+				}
+				this_thread::sleep_for(chrono::milliseconds(1));
+			}
+
 			delete[] threads;
 		}
 
@@ -146,7 +189,7 @@ namespace mutua::events {
 			int lastQueueTail         = el.queueTail;
 			int lastQueueReservedHead = el.queueReservedHead;
 			int lastQueueReservedTail = el.queueReservedTail;
-			while (retries < 10) {	// wait for a total of 10ms without any new events
+			while (retries < nThreads*5) {	// wait a minimum of ~ 20ms without any new events on ~4 consumers
 				if (el.isEmpty && (el.getQueueLength() == 0) && (el.getQueueReservedLength() == 0) &&
 					(lastQueueHead         == el.queueHead)         && (lastQueueTail         == el.queueTail) &&
 					(lastQueueReservedHead == el.queueReservedHead) && (lastQueueReservedTail == el.queueReservedTail)) {

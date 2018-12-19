@@ -156,6 +156,10 @@ namespace mutua::events {
             }
         }
 
+        // dummy consumers to help when destructing the object -- any false wakeup should invoke these, not the real ones
+        void dummyAnswerlessConsumer(const _ArgumentType& arg) {}
+        void dummyAnswerfullConsumer(const _ArgumentType& arg, _AnswerType* ans, std::mutex& m) {m.unlock();}
+
         void unsetConsumer() {
         	answerlessConsumerProcedureReference = nullptr;
         	if (answerlessConsumerThese != nullptr) {
