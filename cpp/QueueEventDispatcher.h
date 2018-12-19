@@ -10,7 +10,7 @@
 using namespace std;
 
 #include <BetterExceptions.h>
-using namespace mutua::cpputils;
+//using namespace mutua::cpputils;
 
 
 namespace mutua::events {
@@ -104,8 +104,9 @@ namespace mutua::events {
 		}
 
 		// default serializers
-		static string defaultEventParameterToStringSerializer(const unsigned int& argument) { return to_string(argument); }
-		static string defaultEventParameterToStringSerializer(            string& argument) { return argument; }
+		static string defaultEventParameterToStringSerializer(const unsigned int&  argument) { return to_string(argument); }
+		static string defaultEventParameterToStringSerializer(const _ArgumentType& argument) { return string(argument); }
+		static string defaultEventParameterToStringSerializer(const       string&  argument) { return argument; }
 
 		void setArgumentSerializer() {
 			if constexpr (std::is_integral<_ArgumentType>::value || std::is_constructible<std::string, _ArgumentType>::value) {
