@@ -140,7 +140,7 @@ namespace mutua::events {
 			// unlock any locked mutexes, allowing full & empty queue locks do proceed -- and wait a little until no mutex is locked again
 			mutex* guardMutexes[] = {&el.reservationGuard, &el.dequeueGuard, &el.queueGuard};
 			unsigned retries = 0;
-			while (retries < nThreads*5) {	// wait a minimum of ~ 20ms without any new locks on ~4 consumers
+			while (retries < nThreads*5) {	// wait a minimum of ~ 40ms without any new locks on ~4 consumers
 				retries++;
 				for (unsigned i=0; i<sizeof(guardMutexes)/sizeof(guardMutexes[0]); i++) {
 					// prevent further lockings
@@ -161,7 +161,7 @@ namespace mutua::events {
 						el.events[i].answerMutex.unlock();
 					}
 				}
-				this_thread::sleep_for(chrono::milliseconds(1));
+				this_thread::sleep_for(chrono::milliseconds(2));
 			}
 
 			delete[] threads;
@@ -190,7 +190,7 @@ namespace mutua::events {
 			int lastQueueTail         = el.queueTail;
 			int lastQueueReservedHead = el.queueReservedHead;
 			int lastQueueReservedTail = el.queueReservedTail;
-			while (retries < nThreads*5) {	// wait a minimum of ~ 20ms without any new events on ~4 consumers
+			while (retries < nThreads*5) {	// wait a minimum of ~ 40ms without any new events on ~4 consumers
 				if (el.isEmpty && (el.getQueueLength() == 0) && (el.getQueueReservedLength() == 0) &&
 					(lastQueueHead         == el.queueHead)         && (lastQueueTail         == el.queueTail) &&
 					(lastQueueReservedHead == el.queueReservedHead) && (lastQueueReservedTail == el.queueReservedTail)) {
@@ -202,7 +202,7 @@ namespace mutua::events {
 					lastQueueReservedHead = el.queueReservedHead;
 					lastQueueReservedTail = el.queueReservedTail;
 				}
-				this_thread::sleep_for(chrono::milliseconds(1));
+				this_thread::sleep_for(chrono::milliseconds(2));
 			}
 			stopASAP();
 		}

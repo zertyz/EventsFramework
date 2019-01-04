@@ -894,10 +894,10 @@ BOOST_AUTO_TEST_CASE(testAnswerfullEvents) {
 	myEvent.addListener          (&QueueEventLinkSuiteObjects::_eventListener1,          (QueueEventLinkSuiteObjects*)this);
 	mutua::events::QueueEventDispatcher myDispatcher(myEvent, 4, 0, true, true, false, true, true);
 
-	BOOST_TEST(answerlessConsumedEvents[1] == 0);
+	BOOST_TEST(answerfullConsumedEvents[1] == 0);
 	BOOST_TEST(          notifyedEvents[1] == 0);
 
-	constexpr int threadsLength = 2;
+	constexpr int threadsLength = 64;
 	thread threads[threadsLength];
 	for (int n=0; n<64; n++) {
 //		cerr << ">n>" << n << flush;
